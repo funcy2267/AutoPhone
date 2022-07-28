@@ -4,24 +4,36 @@ Windows 10 or later is only supported, but you can also run this on virtual mach
 
 ### Requirements
 - [Python 3](https://python.org)
+- [Git](https://gitforwindows.org)
 - [Your Phone app](https://support.microsoft.com/phone-link)
+- Android device
 - Bluetooth
 - Audio routing software
 
 # Setup
+
+### Your Phone
+Connect your Android device with **Your Phone** app.
+
+### Environment
 Create new folder, open PowerShell there and enter this command:
 ```
 iwr -useb https://raw.githubusercontent.com/funcy2267/AutoPhone/main/setup.ps1 | iex
 ```
-It will configure environment for you.\
-Next, create 2 virtual audio line devices (output goes to input).\
-Edit `settings.json` file for your case.\
+You may need to [install your language](http://capture2text.sourceforge.net/#install_additional_languages) for **Capture2Text**.
+
+### Audio routing
+Use 2 virtual audio line devices (output goes to input).\
+Set system default output to `Line 1` and input to `Line 2`.
+
+### Config
+Edit `config.yaml` file for your case.\
 To do this, use following scripts to get data:
-- `audio_devices.py` - get information about connected audio devices
+- `audio_devices.py` - get information about audio devices
 - `get_cursor.py` - get current position of mouse cursor
 
 # Usage
-Create Python file and program your phone calls like this:
+Create new Python file and program your phone calls like this:
 ```
 from AutoPhone import your_phone
 

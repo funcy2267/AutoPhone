@@ -1,0 +1,25 @@
+languages:
+  tts: en # language used by text to speech engine, e.g. "en"
+  stt: en-US # language used by speech recognition engine, e.g. "en-US"
+  c2t: English # language used by Capture2Text, e.g. "English"
+audio:
+  input: 3 # audio input device used by program. If system uses Line 1 output device as default, then choose Line 1 input device.
+  output: 7 # audio output device used by program. If system uses Line 2 input device as default, then choose Line 2 output device.
+buttons:
+  taskbar_app: 3 # index for pinned taskbar app "Your Phone"
+  view_calls: # button for calls page (x, y)
+    - 602
+    - 63
+  call: # start call button (x, y)
+    - 1717
+    - 712
+  answer_call: # button for answering the call from notification (x, y)
+    - 1718
+    - 991
+  reject_call: # button for rejecting the call from notification (x, y)
+    - 1739
+    - 906
+  end_call: # button for ending current call (x, y)
+    - 1791
+    - 93
+wait_for_answer_word: calling # word displayed while waiting for response on call

@@ -1,5 +1,5 @@
 git clone https://github.com/funcy2267/AutoPhone.git
-cp AutoPhone/settings.json .
+cp AutoPhone/config.yaml .
 
 pip3 install -r AutoPhone/requirements.txt
 pipwin install PyAudio

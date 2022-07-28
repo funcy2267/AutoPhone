@@ -6,3 +6,4 @@ sounddevice
 SoundFile
 pipwin
 scipy
+PyYAML
