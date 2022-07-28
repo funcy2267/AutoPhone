@@ -1,0 +1,8 @@
+PyAutoGUI
+SpeechRecognition
+gTTS
+numpy
+sounddevice
+SoundFile
+pipwin
+scipy

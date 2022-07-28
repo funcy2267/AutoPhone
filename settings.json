@@ -1,0 +1,20 @@
+{
+    "languages": {
+        "tts": "en",
+        "stt": "en-US",
+        "c2t": "English"
+    },
+    "audio": {
+        "input": 3,
+        "output": 7
+    },
+    "buttons": {
+        "taskbar_app": 3,
+        "view_calls": [602, 63],
+        "call": [1717, 712],
+        "answer_call": [1718, 991],
+        "reject_call": [1739, 906],
+        "end_call": [1791, 93]
+    },
+    "wait_for_answer_word": "calling"
+}
