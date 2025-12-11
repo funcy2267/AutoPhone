@@ -1,0 +1,9 @@
+fastapi
+pyngrok
+twilio
+python-dotenv
+google-genai
+uvicorn
+requests
+pydantic
+audioop-lts
