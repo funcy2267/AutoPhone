@@ -5,4 +5,6 @@ services:
       - "${SERVICE_PORT}:8080"
     env_file:
       - .env
+    volumes:
+      - ./call_recordings:/app/call_recordings
     restart: unless-stopped

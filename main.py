@@ -7,7 +7,7 @@ import os
 import uvicorn
 from typing import Dict, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import Response
+from fastapi.responses import Response, HTMLResponse, FileResponse
 from pydantic import BaseModel
 from pyngrok import ngrok
 from twilio.twiml.voice_response import VoiceResponse, Connect
@@ -19,9 +19,9 @@ from services.twilio import twilio_client, update_twilio_webhook, make_outbound_
 from services.gemini import GeminiConversationManager, gemini_summarize_audio
 
 # Configuration
-CALLS_DIR = "calls"
+CALLS_DIR = "call_recordings"
 SERVICE_PORT = 8080
-KEEP_CALL_RECORDINGS = int(os.environ.get("KEEP_CALL_RECORDINGS"))
+KEEP_CALL_RECORDINGS = int(os.environ.get("KEEP_CALL_RECORDINGS", 10))
 
 # In-memory store for call-specific data like custom prompts
 call_data_store: Dict[str, Dict] = {}
@@ -31,6 +31,32 @@ SERVER_PUBLIC_URL: Optional[str] = None
 
 # --- FastAPI App ---
 app = FastAPI()
+
+@app.get("/call_recordings")
+async def list_call_recordings(request: Request):
+    """Lists available call recordings."""
+    if not os.path.exists(CALLS_DIR):
+        return HTMLResponse(content="<h1>No recordings found</h1>")
+
+    files = os.listdir(CALLS_DIR)
+    # Filter for wav files
+    files = [f for f in files if f.endswith(".wav")]
+    files.sort(reverse=True)
+
+    html_content = "<h1>Call Recordings</h1><ul>"
+    for f in files:
+        html_content += f'<li><a href="/call_recordings/{f}">{f}</a></li>'
+    html_content += "</ul>"
+
+    return HTMLResponse(content=html_content)
+
+@app.get("/call_recordings/{filename}")
+async def get_call_recording(filename: str):
+    """Serves a specific call recording file."""
+    file_path = os.path.join(CALLS_DIR, filename)
+    if os.path.exists(file_path):
+        return FileResponse(file_path)
+    return Response(content="File not found", status_code=404)
 
 @app.post("/voice")
 async def voice_handler(request: Request):
@@ -120,8 +146,17 @@ async def websocket_handler(websocket: WebSocket):
                 call = twilio_client.calls(call_sid).fetch()
                 call_dict = {k: v for k, v in call.__dict__.items() if not k.startswith('_')}
                 if conversation_manager and conversation_manager.recorder:
-                     recording_path = f"{CALLS_DIR}/{call_sid}.wav" 
-                     requests.post(os.environ.get("WEBHOOK_TARGET_URL"), data=json.dumps({"call": call_dict, "summarized_text": gemini_summarize_audio(recording_path)}, default=json_datetime_serializer), headers={"Content-Type": "application/json"}, timeout=10)
+                     recording_path = f"{CALLS_DIR}/{call_sid}.wav"
+
+                     audio_url = f"{SERVER_PUBLIC_URL}/call_recordings/{call_sid}.wav"
+
+                     webhook_payload = {
+                         "call": call_dict,
+                         "summarized_text": gemini_summarize_audio(recording_path),
+                         "audio": audio_url
+                     }
+
+                     requests.post(os.environ.get("WEBHOOK_TARGET_URL"), data=json.dumps(webhook_payload, default=json_datetime_serializer), headers={"Content-Type": "application/json"}, timeout=10)
             except Exception as e:
                 print(f"Error in post-call processing: {e}")
 
