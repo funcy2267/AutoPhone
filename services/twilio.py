@@ -32,7 +32,14 @@ def make_outbound_call(public_url, to_number) -> str | None:
 
     try:
         print(f"Initiating call to {to_number}...")
-        call = twilio_client.calls.create(to=to_number, from_=twilio_phone_number, url=f"{public_url}/voice")
+        call = twilio_client.calls.create(
+            to=to_number,
+            from_=twilio_phone_number,
+            url=f"{public_url}/voice",
+            status_callback=f"{public_url}/status_callback",
+            status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
+            status_callback_method='POST'
+        )
         print(f"Call initiated successfully. SID: {call.sid}")
         return call.sid
     except Exception as e:

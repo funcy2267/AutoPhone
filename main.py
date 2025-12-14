@@ -19,7 +19,8 @@ from services.twilio import twilio_client, update_twilio_webhook, make_outbound_
 from services.gemini import GeminiConversationManager, gemini_summarize_audio
 
 # Configuration
-CALLS_DIR = "call_recordings"
+CALL_RECORDINGS_DIR = "call_recordings"
+CALL_RECORDINGS_URL_ENDPOINT = "call_recordings"
 SERVICE_PORT = 8080
 KEEP_CALL_RECORDINGS = int(os.environ.get("KEEP_CALL_RECORDINGS", 10))
 
@@ -32,28 +33,10 @@ SERVER_PUBLIC_URL: Optional[str] = None
 # --- FastAPI App ---
 app = FastAPI()
 
-@app.get("/call_recordings")
-async def list_call_recordings(request: Request):
-    """Lists available call recordings."""
-    if not os.path.exists(CALLS_DIR):
-        return HTMLResponse(content="<h1>No recordings found</h1>")
-
-    files = os.listdir(CALLS_DIR)
-    # Filter for wav files
-    files = [f for f in files if f.endswith(".wav")]
-    files.sort(reverse=True)
-
-    html_content = "<h1>Call Recordings</h1><ul>"
-    for f in files:
-        html_content += f'<li><a href="/call_recordings/{f}">{f}</a></li>'
-    html_content += "</ul>"
-
-    return HTMLResponse(content=html_content)
-
 @app.get("/call_recordings/{filename}")
 async def get_call_recording(filename: str):
     """Serves a specific call recording file."""
-    file_path = os.path.join(CALLS_DIR, filename)
+    file_path = os.path.join(CALL_RECORDINGS_DIR, filename)
     if os.path.exists(file_path):
         return FileResponse(file_path)
     return Response(content="File not found", status_code=404)
@@ -90,11 +73,20 @@ async def websocket_handler(websocket: WebSocket):
                 print(data)
                 call_state['stream_sid'] = data['start']['streamSid']
                 call_sid = data['start']['callSid']
-                os.makedirs(CALLS_DIR, exist_ok=True)
-                recording_path = f"{CALLS_DIR}/{call_sid}.wav"
+                os.makedirs(CALL_RECORDINGS_DIR, exist_ok=True)
+                recording_path = f"{CALL_RECORDINGS_DIR}/{call_sid}.wav"
                 print(f"Twilio stream started: {call_state['stream_sid']}")
 
-                conversation_manager = GeminiConversationManager(websocket, call_state, GEMINI_PROMPTS["inbound_init"])
+                # Determine prompt (inbound or outbound)
+                if call_sid in call_data_store:
+                   prompt = call_data_store[call_sid]["prompt"]
+                   print(f"Using custom prompt for call {call_sid}")
+                   del call_data_store[call_sid]
+                else:
+                   prompt = GEMINI_PROMPTS["inbound_init"]
+                   print(f"Using default inbound prompt for call {call_sid}")
+
+                conversation_manager = GeminiConversationManager(websocket, call_state, prompt)
                 gemini_task = asyncio.create_task(conversation_manager.run())
                 conversation_manager.start_recording(recording_path)
                 conversation_manager.initial_prompt_sent.set()
@@ -139,21 +131,21 @@ async def websocket_handler(websocket: WebSocket):
              await websocket.close()
         
         # Handle the end of call
-        if data and 'stop' in data and 'callSid' in data['stop']:
-            cleanup_files(CALLS_DIR, "*.wav", KEEP_CALL_RECORDINGS)
-            call_sid = data['stop']['callSid']
+        # If call_sid was extracted from 'start' event, we can proceed with post-call processing.
+        # We don't rely on 'stop' event because the socket might be closed by the assistant.
+        if call_sid:
+            cleanup_files(CALL_RECORDINGS_DIR, "*.wav", KEEP_CALL_RECORDINGS)
             try:
                 call = twilio_client.calls(call_sid).fetch()
                 call_dict = {k: v for k, v in call.__dict__.items() if not k.startswith('_')}
                 if conversation_manager and conversation_manager.recorder:
-                     recording_path = f"{CALLS_DIR}/{call_sid}.wav"
-
-                     audio_url = f"{SERVER_PUBLIC_URL}/call_recordings/{call_sid}.wav"
+                     recording_path = f"{CALL_RECORDINGS_DIR}/{call_sid}.wav"
+                     recording_url = f"{SERVER_PUBLIC_URL}/{CALL_RECORDINGS_URL_ENDPOINT}/{call_sid}.wav"
 
                      webhook_payload = {
                          "call": call_dict,
                          "summarized_text": gemini_summarize_audio(recording_path),
-                         "audio": audio_url
+                         "recording_url": recording_url
                      }
 
                      requests.post(os.environ.get("WEBHOOK_TARGET_URL"), data=json.dumps(webhook_payload, default=json_datetime_serializer), headers={"Content-Type": "application/json"}, timeout=10)
@@ -180,6 +172,39 @@ async def make_outbound_call_handler(request: Request, call_request: CallRequest
         return {"status": "success", "call_sid": call_sid}
     else:
         return Response(content=json.dumps({"status": "error", "message": "Failed to initiate call."}), status_code=500, media_type="application/json")
+
+@app.post("/status_callback")
+async def status_callback_handler(request: Request):
+    """Handles Twilio status callbacks."""
+    form_data = await request.form()
+    call_sid = form_data.get("CallSid")
+    call_status = form_data.get("CallStatus")
+
+    print(f"Call {call_sid} status: {call_status}")
+
+    if call_status in ["busy", "no-answer", "failed", "canceled"]:
+        # If the call failed, clean up the custom prompt if it exists
+        if call_sid in call_data_store:
+            del call_data_store[call_sid]
+
+        try:
+            # We construct a partial call dict from the form data, or fetch it if needed.
+            # Fetching is safer to get full details.
+            call = twilio_client.calls(call_sid).fetch()
+            call_dict = {k: v for k, v in call.__dict__.items() if not k.startswith('_')}
+
+            webhook_payload = {
+                "call": call_dict,
+                "summarized_text": "None",
+                "recording_url": "None"
+            }
+
+            requests.post(os.environ.get("WEBHOOK_TARGET_URL"), data=json.dumps(webhook_payload, default=json_datetime_serializer), headers={"Content-Type": "application/json"}, timeout=10)
+            print(f"Sent failed call webhook for {call_sid}")
+        except Exception as e:
+            print(f"Error in status callback processing: {e}")
+
+    return Response(content="OK", status_code=200)
 
 def run_app():
     """Starts the ngrok tunnel and the FastAPI app to handle incoming calls."""

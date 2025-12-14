@@ -53,6 +53,7 @@ curl -X POST "http://0.0.0.0:8080/call" \
     "call": {
         "call metadata here"
     },
-    "summarized_text": "AI summarization of call"
+    "summarized_text": "AI summarization of call",
+    "recording_url": "url to recording"
 }
 ```

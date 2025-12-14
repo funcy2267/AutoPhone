@@ -14,7 +14,7 @@ GEMINI_LANGUAGE = os.environ.get("ASSISTANT_LANGUAGE")
 GEMINI_ASSISTANT_OWNER_NAME = os.environ.get("ASSISTANT_OWNER_NAME")
 
 GEMINI_PROMPTS = {
-    "assistant_instruction": f"You are a helpful and friendly {GEMINI_ASSISTANT_OWNER_NAME}'s personal voice assistant. Your task is to conduct a conversation, which will then be transferred to the assistant's owner. At the end of the conversation, remind the interlocutor to end the call. Use language: {GEMINI_LANGUAGE}.",
+    "assistant_instruction": f"You are a helpful and friendly {GEMINI_ASSISTANT_OWNER_NAME}'s personal voice assistant. Your task is to conduct a conversation, which will then be transferred to the assistant's owner. At the end of the conversation, you can end the call using the available tool. Use language: {GEMINI_LANGUAGE}.",
     "inbound_init": "Hello! Please introduce yourself.",
     "outbound_init": "You are being redirected to interlocutor so please start the conversation from now. Your task as an assistant: "
 }
@@ -61,9 +61,21 @@ class GeminiConversationManager:
     async def run(self):
         """Main loop to run the conversation, sending and receiving audio."""
         gemini_client = genai.Client()
+
+        # Tool definition for ending the call
+        end_call_tool = types.Tool(
+            function_declarations=[
+                types.FunctionDeclaration(
+                    name="end_call",
+                    description="Ends the voice call. Call this when the user says goodbye or wants to end the conversation.",
+                )
+            ]
+        )
+
         gemini_config = {
             "response_modalities": ["AUDIO"],
-            "system_instruction": GEMINI_PROMPTS["assistant_instruction"]
+            "system_instruction": GEMINI_PROMPTS["assistant_instruction"],
+            "tools": [end_call_tool]
         }
 
 
@@ -91,6 +103,14 @@ class GeminiConversationManager:
                 # This loop runs for the entire duration of the call
                 while True:
                     async for response in gemini_session.receive():
+                        # Check for tool calls
+                        if response.tool_calls:
+                            for tool_call in response.tool_calls:
+                                if tool_call.name == "end_call":
+                                    print("Gemini requested to end the call.")
+                                    await self.websocket.close()
+                                    return
+
                         if response.data and self.call_state['stream_sid']:
                             await self.send_audio_to_twilio(response.data)
 
@@ -98,15 +118,19 @@ class GeminiConversationManager:
             sender_task = asyncio.create_task(sender())
             receiver_task = asyncio.create_task(receiver())
 
-            # Use asyncio.gather to run both tasks concurrently.
-            # The sender_task will complete when the call ends (receives None).
-            # We then cancel the receiver_task to clean up.
-            try:
-                await sender_task
-            finally:
-                # Once the sender is done (call ended), we cancel the receiver
-                # to exit the gemini_session context manager cleanly.
-                receiver_task.cancel()
+            # We wait for either task to complete.
+            # If sender_task completes (Twilio stopped), we are done.
+            # If receiver_task completes (Gemini tool call), we are also done.
+            done, pending = await asyncio.wait(
+                [sender_task, receiver_task],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
+            # Cancel pending tasks
+            for task in pending:
+                task.cancel()
+
+            # If receiver task finished first (Gemini ended call), we might want to ensure everything is clean.
 
 def gemini_summarize_audio(audio_file_path):
     with open(audio_file_path, 'rb') as f:
