@@ -14,7 +14,7 @@ A voice assistant application powered by Gemini and Twilio, capable of handling 
 - Ngrok Account
 - Gemini API Key
 
-## Configuration
+# Configuration
 
 ### Get all required API keys.
 
@@ -28,12 +28,14 @@ A voice assistant application powered by Gemini and Twilio, capable of handling 
    ```
 Edit `.env` to provide API keys and settings.
 
+# Usage
+
 ## Running with Docker
 
 To start the application:
 
 ```
-sudo docker compose up --build
+sudo docker compose up
 ```
 
 ## API Endpoints
@@ -47,13 +49,21 @@ curl -X POST "http://0.0.0.0:8080/call" \
     "prompt": "Ask how life is going"
   }'
 ```
-- After every call, a call summary is sent to the configured webhook.
+
+- `GET /calls`: List all saved call SIDs.
+- `GET /calls/{call_sid}/call.json`: Get the metadata for a specific call.
+- `GET /calls/{call_sid}/recording.wav`: Get the audio recording for a specific call.
+
+- After every call, a call metadata is saved and sent to the target webhook (if configured).
 ```json
 {
     "call": {
         "call metadata here"
     },
-    "summarized_text": "AI summarization of call",
-    "recording_url": "url to recording"
+    "summarized_text": "AI summarization of call"
 }
 ```
+
+## GUI
+
+App is available [here](https://gallery.appinventor.mit.edu/?galleryid=468a172f-b469-43d4-b359-93a40cb70d4a).

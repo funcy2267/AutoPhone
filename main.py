@@ -14,15 +14,17 @@ from twilio.twiml.voice_response import VoiceResponse, Connect
 
 # Import from new modules
 from services.gemini import GEMINI_PROMPTS
-from utils import json_datetime_serializer, cleanup_files
+from utils import json_datetime_serializer, cleanup_calls
 from services.twilio import twilio_client, update_twilio_webhook, make_outbound_call
 from services.gemini import GeminiConversationManager, gemini_summarize_audio
 
 # Configuration
-CALL_RECORDINGS_DIR = "call_recordings"
-CALL_RECORDINGS_URL_ENDPOINT = "call_recordings"
+CALLS_DIR = "calls"
+CALLS_URL_ENDPOINT = "calls"
 SERVICE_PORT = 8080
-KEEP_CALL_RECORDINGS = int(os.environ.get("KEEP_CALL_RECORDINGS", 10))
+KEEP_CALLS = int(os.environ.get("KEEP_CALLS"))
+RECORDING_FILENAME = "recording.wav"
+METADATA_FILENAME = "call.json"
 
 # In-memory store for call-specific data like custom prompts
 call_data_store: Dict[str, Dict] = {}
@@ -33,13 +35,53 @@ SERVER_PUBLIC_URL: Optional[str] = None
 # --- FastAPI App ---
 app = FastAPI()
 
-@app.get("/call_recordings/{filename}")
-async def get_call_recording(filename: str):
-    """Serves a specific call recording file."""
-    file_path = os.path.join(CALL_RECORDINGS_DIR, filename)
+def process_and_save_call(call_sid: str, call_dict: dict, summarized_text: Optional[str] = None):
+    """Saves call metadata and sends a webhook if configured."""
+    try:
+        call_dir = os.path.join(CALLS_DIR, call_sid)
+        os.makedirs(call_dir, exist_ok=True)
+        
+        webhook_payload = {
+            "call": call_dict,
+            "summarized_text": summarized_text
+        }
+        
+        metadata_path = os.path.join(call_dir, METADATA_FILENAME)
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            json.dump(webhook_payload, f, default=json_datetime_serializer)
+
+        cleanup_calls(CALLS_DIR, KEEP_CALLS)
+
+        # Send webhook
+        webhook_url = os.environ.get("WEBHOOK_TARGET_URL")
+        if webhook_url:
+            with open(metadata_path, 'r') as f:
+                payload = json.load(f)
+            try:
+                requests.post(webhook_url, data=json.dumps(payload), headers={"Content-Type": "application/json"}, timeout=10)
+                print(f"Processed call {call_sid} and sent webhook.")
+            except Exception as e:
+                print(f"Error sending webhook for call {call_sid}: {e}")
+
+    except Exception as e:
+        print(f"Error in process_and_save_call for {call_sid}: {e}")
+
+
+@app.get(f"/{CALLS_URL_ENDPOINT}/{{call_sid}}/{{filename}}")
+async def get_call_data(call_sid: str, filename: str):
+    """Serves the call data for a specific call."""
+    file_path = os.path.join(CALLS_DIR, call_sid, filename)
     if os.path.exists(file_path):
         return FileResponse(file_path)
     return Response(content="File not found", status_code=404)
+
+@app.get(f"/{CALLS_URL_ENDPOINT}")
+async def get_calls_list():
+    """Returns a list of saved call SIDs."""
+    if not os.path.exists(CALLS_DIR):
+        return []
+    calls = [d for d in os.listdir(CALLS_DIR) if os.path.isdir(os.path.join(CALLS_DIR, d))]
+    return calls
 
 @app.post("/voice")
 async def voice_handler(request: Request):
@@ -106,8 +148,8 @@ async def websocket_handler(websocket: WebSocket):
                 print(data)
                 call_state['stream_sid'] = data['start']['streamSid']
                 call_sid = data['start']['callSid']
-                os.makedirs(CALL_RECORDINGS_DIR, exist_ok=True)
-                recording_path = f"{CALL_RECORDINGS_DIR}/{call_sid}.wav"
+                os.makedirs(os.path.join(CALLS_DIR, call_sid), exist_ok=True)
+                recording_path = os.path.join(CALLS_DIR, call_sid, RECORDING_FILENAME)
                 print(f"Twilio stream started: {call_state['stream_sid']}")
 
                 # Determine prompt (inbound or outbound)
@@ -167,32 +209,30 @@ async def websocket_handler(websocket: WebSocket):
         # If call_sid was extracted from 'start' event, we can proceed with post-call processing.
         # We don't rely on 'stop' event because the socket might be closed by the assistant.
         if call_sid:
-            cleanup_files(CALL_RECORDINGS_DIR, "*.wav", KEEP_CALL_RECORDINGS)
             try:
                 call = twilio_client.calls(call_sid).fetch()
                 call_dict = {k: v for k, v in call.__dict__.items() if not k.startswith('_')}
+                
+                call_dir = os.path.join(CALLS_DIR, call_sid)
+                os.makedirs(call_dir, exist_ok=True)
+                
                 if call.answered_by and call.answered_by.startswith("machine"):
                     print(f"Call answered by {call.answered_by}. Skipping success webhook and deleting recording.")
-                    recording_path = f"{CALL_RECORDINGS_DIR}/{call_sid}.wav"
-                    if os.path.exists(recording_path):
-                        os.remove(recording_path)
-                        print(f"Deleted recording: {recording_path}")
+                    if os.path.exists(call_dir):
+                        import shutil
+                        shutil.rmtree(call_dir)
+                        print(f"Deleted call directory: {call_dir}")
                 else:
+                    recording_path = os.path.join(call_dir, RECORDING_FILENAME)
+                    summarized_text = None
+                    
                     if conversation_manager and conversation_manager.recorder:
-                         recording_path = f"{CALL_RECORDINGS_DIR}/{call_sid}.wav"
-                         recording_url = f"{SERVER_PUBLIC_URL}/{CALL_RECORDINGS_URL_ENDPOINT}/{call_sid}.wav"
                          try:
                              summarized_text = gemini_summarize_audio(recording_path)
                          except:
                              summarized_text = None
 
-                         webhook_payload = {
-                             "call": call_dict,
-                             "summarized_text": summarized_text,
-                             "recording_url": recording_url
-                         }
-
-                         requests.post(os.environ.get("WEBHOOK_TARGET_URL"), data=json.dumps(webhook_payload, default=json_datetime_serializer), headers={"Content-Type": "application/json"}, timeout=10)
+                    process_and_save_call(call_sid, call_dict, summarized_text)
             except Exception as e:
                 print(f"Error in post-call processing: {e}")
 
@@ -238,14 +278,8 @@ async def status_callback_handler(request: Request):
             call = twilio_client.calls(call_sid).fetch()
             call_dict = {k: v for k, v in call.__dict__.items() if not k.startswith('_')}
 
-            webhook_payload = {
-                "call": call_dict,
-                "summarized_text": "None",
-                "recording_url": "None"
-            }
+            process_and_save_call(call_sid, call_dict, "None")
 
-            requests.post(os.environ.get("WEBHOOK_TARGET_URL"), data=json.dumps(webhook_payload, default=json_datetime_serializer), headers={"Content-Type": "application/json"}, timeout=10)
-            print(f"Sent failed call webhook for {call_sid}")
         except Exception as e:
             print(f"Error in status callback processing: {e}")
     else:

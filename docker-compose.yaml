@@ -5,6 +5,8 @@ services:
       - "${SERVICE_PORT}:8080"
     env_file:
       - .env
+    environment:
+      - PYTHONUNBUFFERED=1
     volumes:
-      - ./call_recordings:/app/call_recordings
+      - ./calls:/app/calls
     restart: unless-stopped
