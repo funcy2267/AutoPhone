@@ -181,10 +181,14 @@ async def websocket_handler(websocket: WebSocket):
                     if conversation_manager and conversation_manager.recorder:
                          recording_path = f"{CALL_RECORDINGS_DIR}/{call_sid}.wav"
                          recording_url = f"{SERVER_PUBLIC_URL}/{CALL_RECORDINGS_URL_ENDPOINT}/{call_sid}.wav"
+                         try:
+                             summarized_text = gemini_summarize_audio(recording_path)
+                         except:
+                             summarized_text = None
 
                          webhook_payload = {
                              "call": call_dict,
-                             "summarized_text": gemini_summarize_audio(recording_path),
+                             "summarized_text": summarized_text,
                              "recording_url": recording_url
                          }
 
