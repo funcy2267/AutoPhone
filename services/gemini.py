@@ -16,7 +16,8 @@ GEMINI_ASSISTANT_OWNER_NAME = os.environ.get("ASSISTANT_OWNER_NAME")
 GEMINI_PROMPTS = {
     "assistant_instruction": f"You are a helpful and friendly {GEMINI_ASSISTANT_OWNER_NAME}'s personal voice assistant. Your task is to conduct a conversation, which will then be transferred to the assistant's owner. At the end of the conversation, you can end the call using the available tool. Use language: {GEMINI_LANGUAGE}.",
     "inbound_init": "Hello! Please introduce yourself.",
-    "outbound_init": "You are being redirected to interlocutor so please start the conversation from now. Your task as an assistant: "
+    "outbound_init": "You are being redirected to interlocutor so please start the conversation from now. Your task as an assistant: ",
+    "end_call": "Ends the voice call. Call this when the user says goodbye or wants to end the conversation."
 }
 
 class GeminiConversationManager:
@@ -67,7 +68,7 @@ class GeminiConversationManager:
             function_declarations=[
                 types.FunctionDeclaration(
                     name="end_call",
-                    description="Ends the voice call. Call this when the user says goodbye or wants to end the conversation.",
+                    description=GEMINI_PROMPTS["end_call"],
                 )
             ]
         )
@@ -104,11 +105,10 @@ class GeminiConversationManager:
                 while True:
                     async for response in gemini_session.receive():
                         # Check for tool calls
-                        if response.tool_calls:
-                            for tool_call in response.tool_calls:
+                        if response.tool_call and response.tool_call.function_calls:
+                            for tool_call in response.tool_call.function_calls:
                                 if tool_call.name == "end_call":
                                     print("Gemini requested to end the call.")
-                                    await self.websocket.close()
                                     return
 
                         if response.data and self.call_state['stream_sid']:

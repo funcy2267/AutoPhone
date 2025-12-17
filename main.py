@@ -45,6 +45,22 @@ async def get_call_recording(filename: str):
 async def voice_handler(request: Request):
     """Handles incoming call from Twilio and establishes a WebSocket stream."""
     response = VoiceResponse()
+    
+    form_data = await request.form()
+    answered_by = form_data.get("AnsweredBy")
+    forwarded_from = form_data.get("ForwardedFrom")
+    print(f"Incoming call answered by: {answered_by}, ForwardedFrom: {forwarded_from}")
+
+    if answered_by and answered_by.startswith("machine"):
+        print("Answering machine detected. Hanging up.")
+        response.hangup()
+        return Response(content=str(response), media_type="application/xml")
+
+    if forwarded_from:
+        print(f"Call forwarded from {forwarded_from}. Rejecting potential voicemail loop.")
+        response.hangup()
+        return Response(content=str(response), media_type="application/xml")
+
     connect = Connect()
     websocket_url = f"wss://{request.headers['host']}/ws"
     connect.stream(url=websocket_url)
@@ -66,7 +82,24 @@ async def websocket_handler(websocket: WebSocket):
     try:
         # Main loop to receive messages from Twilio
         while True:
-            message = await websocket.receive_text()
+            receive_task = asyncio.create_task(websocket.receive_text())
+            wait_tasks = [receive_task]
+            if gemini_task:
+                wait_tasks.append(gemini_task)
+
+            done, pending = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+
+            if gemini_task and gemini_task in done:
+                print("Gemini assistant ended the conversation.")
+                if not receive_task.done():
+                    receive_task.cancel()
+                break
+
+            try:
+                message = receive_task.result()
+            except WebSocketDisconnect:
+                print("WebSocket disconnected.")
+                break
             data = json.loads(message)
 
             if data['event'] == 'start':
@@ -138,17 +171,24 @@ async def websocket_handler(websocket: WebSocket):
             try:
                 call = twilio_client.calls(call_sid).fetch()
                 call_dict = {k: v for k, v in call.__dict__.items() if not k.startswith('_')}
-                if conversation_manager and conversation_manager.recorder:
-                     recording_path = f"{CALL_RECORDINGS_DIR}/{call_sid}.wav"
-                     recording_url = f"{SERVER_PUBLIC_URL}/{CALL_RECORDINGS_URL_ENDPOINT}/{call_sid}.wav"
+                if call.answered_by and call.answered_by.startswith("machine"):
+                    print(f"Call answered by {call.answered_by}. Skipping success webhook and deleting recording.")
+                    recording_path = f"{CALL_RECORDINGS_DIR}/{call_sid}.wav"
+                    if os.path.exists(recording_path):
+                        os.remove(recording_path)
+                        print(f"Deleted recording: {recording_path}")
+                else:
+                    if conversation_manager and conversation_manager.recorder:
+                         recording_path = f"{CALL_RECORDINGS_DIR}/{call_sid}.wav"
+                         recording_url = f"{SERVER_PUBLIC_URL}/{CALL_RECORDINGS_URL_ENDPOINT}/{call_sid}.wav"
 
-                     webhook_payload = {
-                         "call": call_dict,
-                         "summarized_text": gemini_summarize_audio(recording_path),
-                         "recording_url": recording_url
-                     }
+                         webhook_payload = {
+                             "call": call_dict,
+                             "summarized_text": gemini_summarize_audio(recording_path),
+                             "recording_url": recording_url
+                         }
 
-                     requests.post(os.environ.get("WEBHOOK_TARGET_URL"), data=json.dumps(webhook_payload, default=json_datetime_serializer), headers={"Content-Type": "application/json"}, timeout=10)
+                         requests.post(os.environ.get("WEBHOOK_TARGET_URL"), data=json.dumps(webhook_payload, default=json_datetime_serializer), headers={"Content-Type": "application/json"}, timeout=10)
             except Exception as e:
                 print(f"Error in post-call processing: {e}")
 
@@ -179,10 +219,11 @@ async def status_callback_handler(request: Request):
     form_data = await request.form()
     call_sid = form_data.get("CallSid")
     call_status = form_data.get("CallStatus")
+    answered_by = form_data.get("AnsweredBy")
 
-    print(f"Call {call_sid} status: {call_status}")
+    print(f"Call {call_sid} status: {call_status}, AnsweredBy: {answered_by}")
 
-    if call_status in ["busy", "no-answer", "failed", "canceled"]:
+    if call_status in ["busy", "no-answer", "failed", "canceled"] or (answered_by and answered_by.startswith("machine")):
         # If the call failed, clean up the custom prompt if it exists
         if call_sid in call_data_store:
             del call_data_store[call_sid]
@@ -203,6 +244,8 @@ async def status_callback_handler(request: Request):
             print(f"Sent failed call webhook for {call_sid}")
         except Exception as e:
             print(f"Error in status callback processing: {e}")
+    else:
+        print(f"Call {call_sid} status '{call_status}' is not considered a failure. Webhook not sent.")
 
     return Response(content="OK", status_code=200)
 

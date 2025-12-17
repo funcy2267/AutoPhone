@@ -37,8 +37,8 @@ def make_outbound_call(public_url, to_number) -> str | None:
             from_=twilio_phone_number,
             url=f"{public_url}/voice",
             status_callback=f"{public_url}/status_callback",
-            status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
-            status_callback_method='POST'
+            status_callback_method='POST',
+            machine_detection='Enable'
         )
         print(f"Call initiated successfully. SID: {call.sid}")
         return call.sid
