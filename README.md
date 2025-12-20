@@ -23,9 +23,10 @@ A voice assistant application powered by Gemini and Twilio, capable of handling 
 - [Ngrok API key](https://dashboard.ngrok.com/get-started/your-authtoken)
 
 ### Copy the example environment file:
-   ```
+
+```bash
    cp .env.example .env
-   ```
+```
 Edit `.env` to provide API keys and settings.
 
 # Usage
@@ -40,21 +41,13 @@ sudo docker compose up
 
 ## API Endpoints
 
-- `POST /call`: Initiate an outbound call.
-```bash
-curl -X POST "http://0.0.0.0:8080/call" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "to_number": "+1234567890",
-    "prompt": "Ask how life is going"
-  }'
-```
+Public URL will be available with Ngrok tunnel.
 
-- `GET /calls`: List all saved call SIDs.
-- `GET /calls/{call_sid}/call.json`: Get the metadata for a specific call.
-- `GET /calls/{call_sid}/recording.wav`: Get the audio recording for a specific call.
+- `GET /calls` List all saved call SIDs.
+- `GET /calls/{call_sid}/call.json` Get the metadata for a specific call.
+- `GET /calls/{call_sid}/recording.wav` Get the audio recording for a specific call.
 
-- After every call, a call metadata is saved and sent to the target webhook (if configured).
+After every call, a call metadata is saved and sent to the target webhook (if configured).
 ```json
 {
     "call": {
@@ -63,6 +56,25 @@ curl -X POST "http://0.0.0.0:8080/call" \
     "summarized_text": "AI summarization of call"
 }
 ```
+
+### Outbound calls
+
+- `POST /call`: Initiate an outbound call.
+```json
+{
+    "to_number": "+1234567890",
+    "prompt": "Ask how life is going",
+    "datetime": "2025-12-20-03-19" // set None to call instantly
+}
+```
+
+#### Queue
+
+- `GET /calls/queue`: List queued calls ids.
+- `GET /calls/queue/{id}`: Get the metadata for a specific queued call.
+- `DELETE /calls/queue/{id}`: Remove a queued call.
+
+Queue is not persistent, so it won't be saved after server restart.
 
 ## GUI
 

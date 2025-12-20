@@ -6,6 +6,7 @@ import audioop
 import os
 import uvicorn
 from typing import Dict, Optional
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import Response, HTMLResponse, FileResponse
 from pydantic import BaseModel
@@ -17,6 +18,7 @@ from services.gemini import GEMINI_PROMPTS
 from utils import json_datetime_serializer, cleanup_calls
 from services.twilio import twilio_client, update_twilio_webhook, make_outbound_call
 from services.gemini import GeminiConversationManager, gemini_summarize_audio
+import call_queue
 
 # Configuration
 CALLS_DIR = "calls"
@@ -33,7 +35,12 @@ call_data_store: Dict[str, Dict] = {}
 SERVER_PUBLIC_URL: Optional[str] = None
 
 # --- FastAPI App ---
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    asyncio.create_task(call_queue.process_queue_loop(lambda: SERVER_PUBLIC_URL, call_data_store))
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 def process_and_save_call(call_sid: str, call_dict: dict, summarized_text: Optional[str] = None):
     """Saves call metadata and sends a webhook if configured."""
@@ -67,11 +74,55 @@ def process_and_save_call(call_sid: str, call_dict: dict, summarized_text: Optio
         print(f"Error in process_and_save_call for {call_sid}: {e}")
 
 
+# --- Queue Endpoints ---
+
+@app.get("/calls/queue")
+async def get_queue_ids():
+    """List queued calls ids."""
+    return list(call_queue.get_queue().keys())
+
+@app.get("/calls/queue/{queue_id}")
+async def get_queue_item(queue_id: int):
+    """Get the metadata for a specific queued call."""
+    item = call_queue.get_queued_call(queue_id)
+    if item:
+        return item
+    return Response(content=json.dumps({"error": "Item not found"}), status_code=404, media_type="application/json")
+
+@app.delete("/calls/queue/{queue_id}")
+async def delete_queue_item(queue_id: int):
+    """Remove a queued call."""
+    if call_queue.delete_from_queue(queue_id):
+        return {"status": "deleted", "id": queue_id}
+    return Response(content=json.dumps({"error": "Item not found"}), status_code=404, media_type="application/json")
+
+
 @app.get(f"/{CALLS_URL_ENDPOINT}/{{call_sid}}/{{filename}}")
-async def get_call_data(call_sid: str, filename: str):
+async def get_call_data(call_sid: str, filename: str, raw: bool = False):
     """Serves the call data for a specific call."""
     file_path = os.path.join(CALLS_DIR, call_sid, filename)
     if os.path.exists(file_path):
+        # Handle audio preview
+        if filename == RECORDING_FILENAME and not raw:
+            html_content = f"""
+            <html>
+                <head>
+                    <title>Audio Preview</title>
+                    <style>
+                        body {{ display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #1a1a1a; color: white; font-family: system-ui, sans-serif; }}
+                        audio {{ width: 80%; max-width: 800px; }}
+                    </style>
+                </head>
+                <body>
+                    <audio controls autoplay>
+                        <source src="{filename}?raw=true" type="audio/wav">
+                        Your browser does not support the audio element.
+                    </audio>
+                </body>
+            </html>
+            """
+            return HTMLResponse(content=html_content)
+
         return FileResponse(file_path)
     return Response(content="File not found", status_code=404)
 
@@ -239,11 +290,21 @@ async def websocket_handler(websocket: WebSocket):
 class CallRequest(BaseModel):
     to_number: str
     prompt: str
+    datetime: Optional[str] = None
 
 @app.post("/call")
 async def make_outbound_call_handler(request: Request, call_request: CallRequest):
     """Handles a webhook request to initiate an outbound call with a custom prompt."""
     global SERVER_PUBLIC_URL, call_data_store
+
+    if call_request.datetime:
+        call_data = {
+            "to_number": call_request.to_number,
+            "prompt": call_request.prompt,
+            "datetime": call_request.datetime
+        }
+        q_id = call_queue.add_to_queue(call_data)
+        return {"status": "queued", "queue_id": q_id}
 
     public_url = SERVER_PUBLIC_URL
 
@@ -286,6 +347,10 @@ async def status_callback_handler(request: Request):
         print(f"Call {call_sid} status '{call_status}' is not considered a failure. Webhook not sent.")
 
     return Response(content="OK", status_code=200)
+
+
+
+
 
 def run_app():
     """Starts the ngrok tunnel and the FastAPI app to handle incoming calls."""
