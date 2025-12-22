@@ -5,12 +5,14 @@ A voice assistant application powered by Gemini and Twilio, capable of handling 
 
 - **Real-time Voice AI**: Uses Gemini Live API for voice conversations.
 - **Twilio Integration**: Handles phone calls via Twilio Voice.
-- **Call Summarization**: automatically summarizes calls after they end.
+- **Call Summarization**: Automatically summarizes calls after they end.
+- **Live call preview**: Preview the call in real-time.
+- **GUI App**: Graphical user interface for managing assistant.
 
 ## Prerequisites
 
-- Docker (and Docker Compose)
-- Twilio Account (with phone number used for voice assistant)
+- Docker (with Docker Compose)
+- Twilio Account (with dedicated phone number used for AutoPhone)
 - Ngrok Account
 - Gemini API Key
 
@@ -19,13 +21,13 @@ A voice assistant application powered by Gemini and Twilio, capable of handling 
 ### Get all required API keys.
 
 - [Gemini API key](https://aistudio.google.com/api-keys)
-- [Twilio Account SID and API key](https://www.twilio.com/docs/usage/requests-to-twilio)
+- [Twilio Account SID and API key](https://console.twilio.com)
 - [Ngrok API key](https://dashboard.ngrok.com/get-started/your-authtoken)
 
 ### Copy the example environment file:
 
 ```bash
-   cp .env.example .env
+cp .env.example .env
 ```
 Edit `.env` to provide API keys and settings.
 
@@ -33,10 +35,8 @@ Edit `.env` to provide API keys and settings.
 
 ## Running with Docker
 
-To start the application:
-
 ```
-sudo docker compose up
+sudo docker compose up --build
 ```
 
 ## API Endpoints
@@ -46,27 +46,13 @@ Public URL will be available with Ngrok tunnel.
 - `GET /calls` List all saved call SIDs.
 - `GET /calls/{call_sid}/call.json` Get the metadata for a specific call.
 - `GET /calls/{call_sid}/recording.wav` Get the audio recording for a specific call.
+- `DELETE /calls/{call_sid}` Delete a specific call.
 
 After every call, a call metadata is saved and sent to the target webhook (if configured).
-```json
-{
-    "call": {
-        "call metadata here"
-    },
-    "summarized_text": "AI summarization of call"
-}
-```
 
 ### Outbound calls
 
-- `POST /call`: Initiate an outbound call.
-```json
-{
-    "to_number": "+1234567890",
-    "prompt": "Ask how life is going",
-    "datetime": "2025-12-20-03-19" // set None to call instantly
-}
-```
+- `POST /make_call`: Initiate an outbound call.
 
 #### Queue
 

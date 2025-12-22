@@ -6,5 +6,5 @@ google-genai
 uvicorn
 requests
 pydantic
-audioop-lts
+numpy
 python-multipart

@@ -18,7 +18,7 @@ def update_twilio_webhook(public_url):
             return
 
         number_sid = incoming_phone_numbers[0].sid
-        twilio_client.incoming_phone_numbers(number_sid).update(voice_url=f"{public_url}/voice")
+        twilio_client.incoming_phone_numbers(number_sid).update(voice_url=f"{public_url}/twilio/voice")
         print(f"Successfully updated webhook for {twilio_phone_number}.")
     except Exception as e:
         print(f"Error updating Twilio webhook: {e}")
@@ -35,8 +35,8 @@ def make_outbound_call(public_url, to_number) -> str | None:
         call = twilio_client.calls.create(
             to=to_number,
             from_=twilio_phone_number,
-            url=f"{public_url}/voice",
-            status_callback=f"{public_url}/status_callback",
+            url=f"{public_url}/twilio/voice",
+            status_callback=f"{public_url}/twilio/status_callback",
             status_callback_method='POST',
             machine_detection='Enable'
         )
