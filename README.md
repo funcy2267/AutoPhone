@@ -1,5 +1,5 @@
 # AutoPhone
-A voice assistant application powered by Gemini and Twilio, capable of handling inbound and outbound calls with real-time AI interaction.
+A voice assistant application powered by Gemini and Twilio, capable of handling phone calls with real-time AI interaction.
 
 ## Features
 
@@ -39,28 +39,11 @@ Edit `.env` to provide API keys and settings.
 sudo docker compose up --build
 ```
 
-## API Endpoints
-
 Public URL will be available with Ngrok tunnel.
 
-- `GET /calls` List all saved call SIDs.
-- `GET /calls/{call_sid}/call.json` Get the metadata for a specific call.
-- `GET /calls/{call_sid}/recording.wav` Get the audio recording for a specific call.
-- `DELETE /calls/{call_sid}` Delete a specific call.
+## API Endpoints
 
-After every call, a call metadata is saved and sent to the target webhook (if configured).
-
-### Outbound calls
-
-- `POST /make_call`: Initiate an outbound call.
-
-#### Queue
-
-- `GET /calls/queue`: List queued calls ids.
-- `GET /calls/queue/{id}`: Get the metadata for a specific queued call.
-- `DELETE /calls/queue/{id}`: Remove a queued call.
-
-Queue is not persistent, so it won't be saved after server restart.
+Go to `/docs` to view API documentation.
 
 ## GUI
 

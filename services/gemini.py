@@ -34,6 +34,7 @@ class GeminiConversationManager:
         self.is_speaking = False
         self.observers = []
         self.transcription_history = []
+        self.call_ended_event = asyncio.Event()
 
     async def send_audio_to_twilio(self, pcm_24k_audio):
         """Transcodes and sends audio data to Twilio."""
@@ -126,7 +127,7 @@ class GeminiConversationManager:
             "speech_config": {
                 "voice_config": {
                     "prebuilt_voice_config": {
-                        "voice_name": "Puck"
+                        "voice_name": os.environ.get("GEMINI_ASSISTANT_VOICE")
                     }
                 }
             }
@@ -208,6 +209,8 @@ class GeminiConversationManager:
                 [sender_task, receiver_task],
                 return_when=asyncio.FIRST_COMPLETED
             )
+            
+            self.call_ended_event.set()
 
             # Cancel pending tasks
             for task in pending:
@@ -220,6 +223,7 @@ def gemini_summarize_call(transcription_history):
         return "No transcription available."
 
     transcript_text = "\n".join([f"{entry['role'].upper()}: {entry['text']}" for entry in transcription_history])
+    print(f"Transcript: {transcript_text}")
 
     client = genai.Client()
     response = client.models.generate_content(

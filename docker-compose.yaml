@@ -10,5 +10,5 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     volumes:
-      - ./calls:/app/calls
+      - ./user_data:/app/user_data
     restart: unless-stopped

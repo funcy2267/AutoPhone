@@ -7,8 +7,8 @@ import shutil
 import datetime
 from typing import Dict, Optional, List
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import Response, HTMLResponse, FileResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, HTTPException, status, BackgroundTasks
+from fastapi.responses import Response, HTMLResponse, FileResponse, JSONResponse
 from pydantic import BaseModel
 from twilio.twiml.voice_response import VoiceResponse, Connect
 import utils
@@ -16,11 +16,14 @@ import utils
 import services
 
 # Configuration
-CALLS_DIR = "calls"
+USER_DATA_DIR = "user_data"
+CALLS_DIR = os.path.join(USER_DATA_DIR, "calls")
 KEEP_CALLS = int(os.environ.get("KEEP_CALLS"))
 SUMMARIZE_CALLS = os.environ.get("SUMMARIZE_CALLS", "true").lower() == "true"
 RECORDING_FILENAME = "recording.wav"
 METADATA_FILENAME = "call.json"
+APP_PASSWORD = os.environ.get("APP_PASSWORD")
+WEBHOOK_NOTIFICATION_URL = os.environ.get("WEBHOOK_NOTIFICATION_URL")
 
 # Endpoints
 CALLS_ENDPOINT = "calls"
@@ -30,13 +33,12 @@ QUEUE_ENDPOINT = "queue"
 
 # In-memory store
 call_data_store: Dict[str, Dict] = {}
-
 current_call_sid: Optional[str] = None
 active_cm: Optional[services.gemini.GeminiConversationManager] = None
 scheduled_calls: Dict[int, asyncio.Task] = {}
 scheduled_calls_data: Dict[int, Dict] = {}
 next_queue_id = 1
-SERVER_PUBLIC_URL: Optional[str] = None
+SERVER_PUBLIC_URL = None
 
 # --- FastAPI App & Lifespan ---
 
@@ -47,6 +49,25 @@ async def lifespan(app: FastAPI):
         task.cancel()
 
 app = FastAPI(lifespan=lifespan)
+
+@app.middleware("http")
+async def verify_password_middleware(request: Request, call_next):
+    # Only protect endpoints starting with /calls
+    # Exclude websocket if needed? WebSockets are handled by @app.websocket, middleware applies to HTTP mostly but let's be careful.
+    # Actually, FastAPI middleware applies to everything HTTP. HTTP exceptions don't work well in Websockets handshake sometimes, but let's assume HTTP endpoints for now.
+    
+    if APP_PASSWORD and request.url.path.startswith(f"/{CALLS_ENDPOINT}"):
+        # Check query param 'pass'
+        password = request.query_params.get("pass")
+        if password != APP_PASSWORD:
+             return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"detail": "Incorrect password"}
+            )
+            
+    response = await call_next(request)
+    return response
+
 
 
 # ==========================================
@@ -155,7 +176,7 @@ async def handle_immediate_call(call_request: CallRequest):
         return Response(content=json.dumps({"status": "error", "message": "Failed to initiate call."}), status_code=500, media_type="application/json")
 
 # Initiate a new outbound call
-@app.post("/make_call")
+@app.post(f"/{CALLS_ENDPOINT}/make")
 async def make_outbound_call_handler(request: Request, call_request: CallRequest):
     if call_request.datetime:
         return await handle_scheduled_call(call_request)
@@ -183,17 +204,22 @@ async def send_prompt_to_call(call_sid: str, payload: dict):
     
     return Response(content=json.dumps({"error": "Active call not found"}), status_code=404, media_type="application/json")
 
-# Send a text prompt to the currently active call
-@app.post(f"/{CALLS_ENDPOINT}/{CURRENT_CALL_ENDPOINT}/prompt")
-async def send_prompt_to_current_call(payload: dict):
-    call_sid = get_current_call_sid()
-    if not call_sid:
-        return Response(content=json.dumps({"error": "No active calls"}), status_code=404, media_type="application/json")
-    return await send_prompt_to_call(call_sid, payload)
 
-# Serve the preview page for the currently active call
-@app.get(f"/{CALLS_ENDPOINT}/{CURRENT_CALL_ENDPOINT}/preview")
-async def preview_current_call(request: Request):
+
+# Get current call info
+@app.get(f"/{CALLS_ENDPOINT}/{CURRENT_CALL_ENDPOINT}/info")
+async def get_current_call_info():
+    global active_cm
+    sid = get_current_call_sid()
+    return {
+        "active": active_cm is not None,
+        "call_sid": sid
+    }
+
+
+# Serve the audio-only preview page for the currently active call
+@app.get(f"/{CALLS_ENDPOINT}/{CURRENT_CALL_ENDPOINT}/audio")
+async def audio_preview_current_call(request: Request):
     call_sid = get_current_call_sid()
     if not call_sid:
         return HTMLResponse("<h1>No active call to preview</h1>")
@@ -204,35 +230,34 @@ async def preview_current_call(request: Request):
     html_content = f"""
     <html>
         <head>
-            <title>Call Preview: {call_sid}</title>
+            <title>Audio Preview: {call_sid}</title>
             <style>
-                body {{ font-family: sans-serif; padding: 20px; display: flex; flex-direction: column; height: 90vh; }}
-                .status {{ padding: 10px; background: #eee; margin-bottom: 20px; }}
-                .controls {{ border-top: 1px solid #ccc; padding-top: 20px; margin-bottom: 20px; }}
-                input[type="text"] {{ width: 300px; padding: 5px; }}
-                button {{ padding: 5px 10px; }}
-                #chat-container {{ flex-grow: 1; border: 1px solid #ddd; overflow-y: auto; padding: 10px; background: #f9f9f9; }}
-                .message {{ margin-bottom: 10px; padding: 8px; border-radius: 5px; max-width: 80%; }}
-                .role-assistant {{ background-color: #e1f5fe; align-self: flex-start; }}
-                .role-admin {{ background-color: #e8f5e9; align-self: flex-end; margin-left: auto; }}
-                .role-system {{ background-color: #eee; text-align: center; font-style: italic; max-width: 100%; }}
-                .role-user {{ background-color: #fff3e0; align-self: flex-start; }}
-                .meta {{ font-size: 0.8em; color: #666; margin-bottom: 2px; }}
+                body {{ font-family: sans-serif; padding: 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: #f0f0f0; margin: 0; }}
+                .container {{ background: white; padding: 40px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; width: 300px; }}
+                .status {{ margin-bottom: 20px; font-weight: bold; color: #333; }}
+                button {{
+                    padding: 15px 30px;
+                    font-size: 18px;
+                    cursor: pointer;
+                    background-color: #007bff;
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    transition: background-color 0.3s;
+                    width: 100%;
+                }}
+                button:hover {{ background-color: #0056b3; }}
+                .active {{ color: green; }}
+                .inactive {{ color: red; }}
             </style>
         </head>
         <body>
-            <h1>Call: {call_sid}</h1>
-            <div class="status">
-                Status: <span id="status-text">{'Active' if call_sid == current_call_sid else 'Inactive'}</span>
+            <div class="container">
+                <h2>Live Audio</h2>
+                <div class="status">
+                    Status: <span id="status-text" class="{'active' if call_sid == current_call_sid else 'inactive'}">{'Active' if call_sid == current_call_sid else 'Inactive'}</span>
+                </div>
                 <button onclick="toggleAudio()" id="audio-btn">Enable Audio</button>
-            </div>
-            
-            <div id="chat-container"></div>
-
-            <div class="controls">
-                <h3>Inject Prompt</h3>
-                <input type="text" id="promptInput" placeholder="Enter text to say..." onkeydown="if(event.key === 'Enter') sendPrompt()">
-                <button onclick="sendPrompt()">Send</button>
             </div>
 
             <script>
@@ -252,34 +277,37 @@ async def preview_current_call(request: Request):
 
                 function toggleAudio() {{
                     initAudio();
-                    document.getElementById('audio-btn').innerText = "Audio Enabled";
+                    const btn = document.getElementById('audio-btn');
+                    if (btn.innerText === "Enable Audio") {{
+                        btn.innerText = "Audio Enabled";
+                        btn.style.backgroundColor = "#28a745";
+                    }}
                 }}
 
                 function playPcm(base64Data) {{
                     if (!audioCtx) return;
-                    
+
                     const binaryString = window.atob(base64Data);
                     const len = binaryString.length;
                     const bytes = new Uint8Array(len);
                     for (let i = 0; i < len; i++) {{
                         bytes[i] = binaryString.charCodeAt(i);
                     }}
-                    
-                    // Convert 16-bit PCM to float32
+
                     const int16 = new Int16Array(bytes.buffer);
                     const float32 = new Float32Array(int16.length);
                     for (let i = 0; i < int16.length; i++) {{
                         float32[i] = int16[i] / 32768.0;
                     }}
-                    
+
                     const buffer = audioCtx.createBuffer(1, float32.length, 8000);
                     buffer.copyToChannel(float32, 0);
-                    
+
                     const source = audioCtx.createBufferSource();
                     source.buffer = buffer;
                     source.connect(audioCtx.destination);
-                    
-                    const BUFFER_DELAY = 0.15; // 150ms buffer
+
+                    const BUFFER_DELAY = 0.15;
                     if (nextStartTime < audioCtx.currentTime) {{
                         nextStartTime = audioCtx.currentTime + BUFFER_DELAY;
                     }}
@@ -292,81 +320,38 @@ async def preview_current_call(request: Request):
                     const statusText = document.getElementById('status-text');
 
                     ws.onopen = function() {{
-                        addMessage("system", "Connected to live updates");
                         statusText.innerText = "Connected (Active)";
+                        statusText.className = "active";
                     }};
 
                     ws.onmessage = function(event) {{
                         const data = JSON.parse(event.data);
-                        if (data.type === 'log') {{
-                            addMessage(data.role, data.text);
-                        }} else if (data.type === 'audio') {{
+                        if (data.type === 'audio') {{
                             playPcm(data.data);
                         }}
                     }};
 
                     ws.onclose = function() {{
-                        addMessage("system", "Connection closed");
                         statusText.innerText = "Disconnected";
+                        statusText.className = "inactive";
                     }};
                 }}
 
-                function addMessage(role, text) {{
-                    const chatContainer = document.getElementById('chat-container');
-                    const lastMessage = chatContainer.lastElementChild;
-                    
-                    // Check if the last message exists and has the same role
-                    if (lastMessage && lastMessage.classList.contains("role-" + role) && role !== 'system') {{
-                        // Append text to the existing content div
-                        const contentDiv = lastMessage.querySelector('.content');
-                        if (contentDiv) {{
-                            contentDiv.innerText += text;
-                        }}
-                    }} else {{
-                        // Create new message block
-                        const div = document.createElement('div');
-                        div.className = "message role-" + role;
-                        
-                        const meta = document.createElement('div');
-                        meta.className = "meta";
-                        meta.innerText = role.toUpperCase();
-                        
-                        const content = document.createElement('div');
-                        content.className = "content"; // Add class for easy selection
-                        content.innerText = text;
-                        
-                        if (role !== 'system') {{
-                            div.appendChild(meta);
-                        }}
-                        div.appendChild(content);
-                        chatContainer.appendChild(div);
-                    }}
-                    chatContainer.scrollTop = chatContainer.scrollHeight;
-                }}
-
-                async function sendPrompt() {{
-                    const input = document.getElementById('promptInput');
-                    const prompt = input.value;
-                    if (!prompt) return;
-                    
-                    try {{
-                        const response = await fetch('/{CALLS_ENDPOINT}/{CURRENT_CALL_ENDPOINT}/prompt', {{
-                            method: 'POST',
-                            headers: {{ 'Content-Type': 'application/json' }},
-                            body: JSON.stringify({{ prompt: prompt }})
-                        }});
-                        const result = await response.json();
-                        if (result.status === 'sent') {{
-                            input.value = '';
-                        }} else {{
-                            alert('Error: ' + JSON.stringify(result));
-                        }}
-                    }} catch (e) {{
-                        alert('Error: ' + e);
-                    }}
-                }}
-                
                 connect();
+                
+                // Autoplay audio
+                window.addEventListener('load', () => {{
+                    initAudio();
+                    const btn = document.getElementById('audio-btn');
+                    if (btn) {{
+                        btn.innerText = "Audio Enabled";
+                        btn.style.backgroundColor = "#28a745";
+                    }}
+                    // Attempt to resume immediately
+                    if (audioCtx) {{
+                        audioCtx.resume().catch(e => console.log("Autoplay blocked:", e));
+                    }}
+                }});
             </script>
         </body>
     </html>
@@ -376,17 +361,38 @@ async def preview_current_call(request: Request):
 # WebSocket endpoint for streaming call audio and logs
 @app.websocket(f"/{CALLS_ENDPOINT}/{CURRENT_CALL_ENDPOINT}/ws")
 async def preview_websocket(websocket: WebSocket):
-    await websocket.accept()
-    
     global active_cm
-    if not active_cm or current_call_sid != call_sid:
+    if not active_cm:
         await websocket.close(code=1000, reason="Call not active")
         return
+
+    await websocket.accept()
 
     await active_cm.add_observer(websocket)
     try:
         while True:
-             await websocket.receive_text()
+            receive_task = asyncio.create_task(websocket.receive_text())
+            call_ended_task = asyncio.create_task(active_cm.call_ended_event.wait())
+            
+            done, pending = await asyncio.wait(
+                [receive_task, call_ended_task],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            
+            if call_ended_task in done:
+                receive_task.cancel()
+                print("Call ended, closing preview websocket")
+                await websocket.close(code=1000, reason="Call ended")
+                break
+                
+            if receive_task in done:
+                try:
+                    message = receive_task.result()
+                    print(f"Received prompt via websocket: {message}")
+                    await active_cm.send_text_prompt(message)
+                except Exception as e:
+                    print(f"Error processing message: {e}")
+
     except WebSocketDisconnect:
         pass
     except Exception as e:
@@ -531,6 +537,24 @@ async def websocket_handler(websocket: WebSocket):
                 conversation_manager.start_recording(recording_path)
                 conversation_manager.initial_prompt_sent.set()
 
+                # Send Webhook that call started
+                if WEBHOOK_NOTIFICATION_URL:
+                     try:
+                        call_details = services.twilio.twilio_client.calls(call_sid).fetch()
+                        call_info = {k: v for k, v in call_details.__dict__.items() if not k.startswith('_')}
+                        payload = {
+                            "event": "started",
+                            "call_sid": call_sid,
+                            "timestamp": datetime.datetime.now().isoformat(),
+                            "twilio_call_data": call_info
+                        }
+                        # We use fire-and-forget logic or just await with short timeout
+                        requests.post(WEBHOOK_NOTIFICATION_URL, json=payload, timeout=2)
+                        print(f"Sent start webhook for {call_sid}")
+                     except Exception as e:
+                        print(f"Failed to send start webhook: {e}")
+
+
             elif data['event'] == 'media':
                 if not conversation_manager:
                     continue
@@ -632,7 +656,7 @@ def process_call(call_sid: str, call_dict: dict, summarized_text: Optional[str] 
 
         utils.cleanup_calls(CALLS_DIR, KEEP_CALLS)
 
-        webhook_url = os.environ.get("WEBHOOK_TARGET_URL")
+        webhook_url = WEBHOOK_NOTIFICATION_URL
         if webhook_url:
             with open(metadata_path, 'r') as f:
                 payload = json.load(f)
