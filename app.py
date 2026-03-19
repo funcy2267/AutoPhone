@@ -22,8 +22,10 @@ KEEP_CALLS = int(os.environ.get("KEEP_CALLS"))
 SUMMARIZE_CALLS = os.environ.get("SUMMARIZE_CALLS", "true").lower() == "true"
 RECORDING_FILENAME = "recording.wav"
 METADATA_FILENAME = "call.json"
-APP_PASSWORD = os.environ.get("APP_PASSWORD")
 WEBHOOK_NOTIFICATION_URL = os.environ.get("WEBHOOK_NOTIFICATION_URL")
+HTTP_AUTH = os.environ.get("HTTP_AUTH", "false").lower() == "true"
+HTTP_USERNAME = os.environ.get("HTTP_USERNAME")
+HTTP_PASSWORD = os.environ.get("HTTP_PASSWORD")
 
 # Endpoints
 CALLS_ENDPOINT = "calls"
@@ -50,29 +52,40 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# Authentication
+
 @app.middleware("http")
 async def verify_password_middleware(request: Request, call_next):
     # Only protect endpoints starting with /calls
-    # Exclude websocket if needed? WebSockets are handled by @app.websocket, middleware applies to HTTP mostly but let's be careful.
-    # Actually, FastAPI middleware applies to everything HTTP. HTTP exceptions don't work well in Websockets handshake sometimes, but let's assume HTTP endpoints for now.
-    
-    if APP_PASSWORD and request.url.path.startswith(f"/{CALLS_ENDPOINT}"):
-        # Check query param 'pass'
-        password = request.query_params.get("pass")
-        if password != APP_PASSWORD:
+
+    if HTTP_AUTH and request.url.path.startswith(f"/{CALLS_ENDPOINT}"):
+        auth_header = request.headers.get("Authorization")
+        is_authorized = False
+        if auth_header and auth_header.startswith("Basic "):
+            try:
+                # Decode the base64 credentials
+                decoded_credentials = base64.b64decode(auth_header[6:]).decode("utf-8")
+                username, password = decoded_credentials.split(":", 1)
+                
+                # Check against environment variables
+                import secrets
+                if secrets.compare_digest(username, HTTP_USERNAME or "") and secrets.compare_digest(password, HTTP_PASSWORD or ""):
+                    is_authorized = True
+            except Exception:
+                pass
+        
+        if not is_authorized:
              return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"detail": "Incorrect password"}
+                headers={"WWW-Authenticate": "Basic"},
+                content={"detail": "Incorrect username or password"}
             )
             
     response = await call_next(request)
     return response
 
 
-
-# ==========================================
 # Group 1: Queue Management
-# ==========================================
 
 async def schedule_call(queue_id: int, delay_seconds: float, call_data: dict):
     try:
@@ -125,9 +138,7 @@ async def delete_queue_item(queue_id: int):
     return Response(content=json.dumps({"error": "Item not found"}), status_code=404, media_type="application/json")
 
 
-# ==========================================
 # Group 2: Outbound Call Management
-# ==========================================
 
 class CallRequest(BaseModel):
     to_number: str
@@ -183,9 +194,7 @@ async def make_outbound_call_handler(request: Request, call_request: CallRequest
     return await handle_immediate_call(call_request)
 
 
-# ==========================================
 # Group 3: Active Call Control
-# ==========================================
 
 # Helper to get active call sid
 def get_current_call_sid():
@@ -401,9 +410,7 @@ async def preview_websocket(websocket: WebSocket):
         if active_cm:
             active_cm.remove_observer(websocket)
 
-# ==========================================
 # Group 4: Twilio Integration (Webhooks & Streams)
-# ==========================================
 
 # Twilio webhook for call status updates
 @app.post(f"/{TWILIO_ENDPOINT}/status_callback")
@@ -635,9 +642,7 @@ async def websocket_handler(websocket: WebSocket):
 
 
 
-# ==========================================
 # Group 5: Call Management
-# ==========================================
 
 def process_call(call_sid: str, call_dict: dict, summarized_text: Optional[str] = None, transcription: list = []):
     try:

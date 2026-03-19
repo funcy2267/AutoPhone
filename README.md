@@ -39,11 +39,9 @@ Edit `.env` to provide API keys and settings.
 sudo docker compose up --build
 ```
 
-Public URL will be available with Ngrok tunnel.
-
 ## API Endpoints
 
-Go to `/docs` to view API documentation.
+Go to `/docs` on server to view API documentation.
 
 ## GUI
 
