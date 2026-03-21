@@ -11,32 +11,38 @@ A voice assistant application powered by Gemini and Twilio, capable of handling 
 
 ## Prerequisites
 
-- Docker (with Docker Compose)
-- Twilio Account (with dedicated phone number used for AutoPhone)
-- Ngrok Account
+- Python 3
+- Twilio Account (with dedicated phone number used for voice assistant)
 - Gemini API Key
 
 # Configuration
 
-### Get all required API keys.
+### Get all required API keys
 
 - [Gemini API key](https://aistudio.google.com/api-keys)
 - [Twilio Account SID and API key](https://console.twilio.com)
-- [Ngrok API key](https://dashboard.ngrok.com/get-started/your-authtoken)
 
-### Copy the example environment file:
+### Provide API keys and settings
 
 ```bash
 cp .env.example .env
+cp settings.json.example settings.json
 ```
-Edit `.env` to provide API keys and settings.
+
+Edit `.env` and `settings.json` to provide API keys and settings.
+Your instance must be publicly available, so use your own configuration or tunnelling service like [ngrok](https://ngrok.com).
+
+### Install requirements
+```bash
+pip install -r requirements.txt
+```
 
 # Usage
 
-## Running with Docker
+## Running the Server
 
-```
-sudo docker compose up --build
+```bash
+python3 main.py
 ```
 
 ## API Endpoints

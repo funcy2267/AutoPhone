@@ -7,11 +7,19 @@ import os
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
+import utils
+import websockets
 
 load_dotenv()
 
-GEMINI_LANGUAGE = os.environ.get("ASSISTANT_LANGUAGE")
-GEMINI_ASSISTANT_OWNER_NAME = os.environ.get("ASSISTANT_OWNER_NAME")
+settings = utils.load_settings()
+
+GEMINI_LANGUAGE = settings.get("ASSISTANT_LANGUAGE")
+GEMINI_ASSISTANT_OWNER_NAME = settings.get("ASSISTANT_OWNER_NAME")
+GEMINI_ASSISTANT_MODEL = settings.get("GEMINI_ASSISTANT_MODEL")
+GEMINI_ASSISTANT_VOICE = settings.get("GEMINI_ASSISTANT_VOICE")
+GEMINI_SUMMARIZATION_MODEL = settings.get("GEMINI_SUMMARIZATION_MODEL")
+
 
 GEMINI_PROMPTS = {
     "assistant_instruction": f"You are a helpful and friendly {GEMINI_ASSISTANT_OWNER_NAME}'s personal voice assistant. Your task is to conduct a conversation, which will then be transferred to the assistant's owner. Use language: {GEMINI_LANGUAGE}.",
@@ -127,7 +135,7 @@ class GeminiConversationManager:
             "speech_config": {
                 "voice_config": {
                     "prebuilt_voice_config": {
-                        "voice_name": os.environ.get("GEMINI_ASSISTANT_VOICE")
+                        "voice_name": GEMINI_ASSISTANT_VOICE
                     }
                 }
             }
@@ -139,66 +147,74 @@ class GeminiConversationManager:
         gemini_config['output_audio_transcription'] = {}
 
 
-        async with gemini_client.aio.live.connect(model=os.environ.get("GEMINI_ASSISTANT_MODEL"), config=gemini_config) as gemini_session:
+        async with gemini_client.aio.live.connect(model=GEMINI_ASSISTANT_MODEL, config=gemini_config) as gemini_session:
             print("Gemini Live session started for continuous conversation.")
 
             async def sender():
-                # Wait for the initial prompt to be sent before processing input queue
-                await self.initial_prompt_sent.wait()
-                await gemini_session.send_realtime_input(
-                    text=self.initial_prompt
-                )
+                try:
+                    # Wait for the initial prompt to be sent before processing input queue
+                    await self.initial_prompt_sent.wait()
+                    await gemini_session.send_realtime_input(
+                        text=self.initial_prompt
+                    )
 
-                """Sends inputs (audio or text) from the internal queue to Gemini."""
-                while True:
-                    item = await self.input_queue.get()
-                    if item is None:
-                        break
-                    
-                    type_, data = item
-                    if type_ == 'audio':
-                         await gemini_session.send_realtime_input(
-                            audio=types.Blob(data=data, mime_type="audio/pcm;rate=8000")
-                        )
-                    elif type_ == 'text':
-                         await gemini_session.send_realtime_input(text=data)
+                    """Sends inputs (audio or text) from the internal queue to Gemini."""
+                    while True:
+                        item = await self.input_queue.get()
+                        if item is None:
+                            break
+                        
+                        type_, data = item
+                        if type_ == 'audio':
+                             await gemini_session.send_realtime_input(
+                                audio=types.Blob(data=data, mime_type="audio/pcm;rate=8000")
+                            )
+                        elif type_ == 'text':
+                             await gemini_session.send_realtime_input(text=data)
+                except websockets.exceptions.ConnectionClosedError as e:
+                    print(f"Gemini sender WebSocket closed ({e.code}: {e.reason})")
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    print(f"Sender task error: {e}")
 
             async def receiver():
                 """Receives audio from Gemini and sends it to Twilio."""
-                # This loop runs for the entire duration of the call
-                while True:
-                    async for response in gemini_session.receive():
-                        # Check for tool calls
-                        if response.tool_call and response.tool_call.function_calls:
-                            for tool_call in response.tool_call.function_calls:
-                                if tool_call.name == "end_call":
-                                    print("Gemini requested to end the call.")
-                                    return
-                        
-                        # Check for text content (Assistant's response text) - deprecated for AUDIO mode
-                        '''
-                        if response.text:
-                             print(f"Assistant said text: {response.text}")
-                             await self.broadcast_event({"type": "log", "role": "assistant", "text": response.text})
-                        '''
-                        # Check for output transcription (Assistant's speech transcribed)
-                        if response.server_content and response.server_content.output_transcription:
-                            transcription = response.server_content.output_transcription
-                            if transcription.text:
-                                print(f"Assistant said: {transcription.text}")
-                                self._append_to_transcript("assistant", transcription.text)
-                                await self.broadcast_event({"type": "log", "role": "assistant", "text": transcription.text})
+                try:
+                    # This loop runs for the entire duration of the call
+                    while True:
+                        async for response in gemini_session.receive():
+                            # Check for tool calls
+                            if response.tool_call and response.tool_call.function_calls:
+                                for tool_call in response.tool_call.function_calls:
+                                    if tool_call.name == "end_call":
+                                        print("Gemini requested to end the call.")
+                                        return
+                            
+                            # Check for output transcription (Assistant's speech transcribed)
+                            if response.server_content and response.server_content.output_transcription:
+                                transcription = response.server_content.output_transcription
+                                if transcription.text:
+                                    print(f"Assistant said: {transcription.text}")
+                                    self._append_to_transcript("assistant", transcription.text)
+                                    await self.broadcast_event({"type": "log", "role": "assistant", "text": transcription.text})
 
-                        # Check for user input transcription
-                        if response.server_content and response.server_content.input_transcription:
-                            transcription = response.server_content.input_transcription
-                            if transcription.text:
-                                print(f"User said: {transcription.text}")
-                                self._append_to_transcript("user", transcription.text)
-                                await self.broadcast_event({"type": "log", "role": "user", "text": transcription.text})
+                            # Check for user input transcription
+                            if response.server_content and response.server_content.input_transcription:
+                                transcription = response.server_content.input_transcription
+                                if transcription.text:
+                                    print(f"User said: {transcription.text}")
+                                    self._append_to_transcript("user", transcription.text)
+                                    await self.broadcast_event({"type": "log", "role": "user", "text": transcription.text})
 
-                        if response.data and self.call_state['stream_sid']:
-                            await self.send_audio_to_twilio(response.data)
+                            if response.data and self.call_state['stream_sid']:
+                                await self.send_audio_to_twilio(response.data)
+                except websockets.exceptions.ConnectionClosedError as e:
+                    print(f"Gemini receiver WebSocket closed ({e.code}: {e.reason})")
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    print(f"Receiver task error: {e}")
 
             # Start sender and receiver tasks that run for the duration of the session
             sender_task = asyncio.create_task(sender())
@@ -227,7 +243,7 @@ def gemini_summarize_call(transcription_history):
 
     client = genai.Client()
     response = client.models.generate_content(
-    model=os.environ.get("GEMINI_SUMMARIZATION_MODEL"),
+    model=GEMINI_SUMMARIZATION_MODEL,
     contents=[
         f'Summarize this conversation between AI and user. Use language: {GEMINI_LANGUAGE}.\n\nTranscript:\n{transcript_text}'
     ]

@@ -12,20 +12,24 @@ from fastapi.responses import Response, HTMLResponse, FileResponse, JSONResponse
 from pydantic import BaseModel
 from twilio.twiml.voice_response import VoiceResponse, Connect
 import utils
+from dotenv import load_dotenv
+
+load_dotenv()
 
 import services
+
+settings = utils.load_settings()
 
 # Configuration
 USER_DATA_DIR = "user_data"
 CALLS_DIR = os.path.join(USER_DATA_DIR, "calls")
-KEEP_CALLS = int(os.environ.get("KEEP_CALLS"))
-SUMMARIZE_CALLS = os.environ.get("SUMMARIZE_CALLS", "true").lower() == "true"
+KEEP_CALLS = settings.get("KEEP_CALLS")
+SUMMARIZE_CALLS = True
 RECORDING_FILENAME = "recording.wav"
 METADATA_FILENAME = "call.json"
-WEBHOOK_NOTIFICATION_URL = os.environ.get("WEBHOOK_NOTIFICATION_URL")
-HTTP_AUTH = os.environ.get("HTTP_AUTH", "false").lower() == "true"
-HTTP_USERNAME = os.environ.get("HTTP_USERNAME")
-HTTP_PASSWORD = os.environ.get("HTTP_PASSWORD")
+WEBHOOK_NOTIFICATION_URL = settings.get("WEBHOOK_NOTIFICATION_URL")
+HTTP_AUTH = settings.get("HTTP_AUTH")
+SERVER_PUBLIC_URL = settings.get("SERVER_PUBLIC_URL")
 
 # Endpoints
 CALLS_ENDPOINT = "calls"
@@ -40,7 +44,6 @@ active_cm: Optional[services.gemini.GeminiConversationManager] = None
 scheduled_calls: Dict[int, asyncio.Task] = {}
 scheduled_calls_data: Dict[int, Dict] = {}
 next_queue_id = 1
-SERVER_PUBLIC_URL = None
 
 # --- FastAPI App & Lifespan ---
 
@@ -69,7 +72,7 @@ async def verify_password_middleware(request: Request, call_next):
                 
                 # Check against environment variables
                 import secrets
-                if secrets.compare_digest(username, HTTP_USERNAME or "") and secrets.compare_digest(password, HTTP_PASSWORD or ""):
+                if secrets.compare_digest(username, os.environ.get("HTTP_USERNAME") or "") and secrets.compare_digest(password, os.environ.get("HTTP_PASSWORD") or ""):
                     is_authorized = True
             except Exception:
                 pass
@@ -649,7 +652,7 @@ def process_call(call_sid: str, call_dict: dict, summarized_text: Optional[str] 
         call_dir = os.path.join(CALLS_DIR, call_sid)
         os.makedirs(call_dir, exist_ok=True)
         
-        webhook_payload = {
+        payload = {
             "twilio_call_data": call_dict,
             "summarized_text": summarized_text,
             "transcription": transcription
@@ -657,19 +660,9 @@ def process_call(call_sid: str, call_dict: dict, summarized_text: Optional[str] 
         
         metadata_path = os.path.join(call_dir, METADATA_FILENAME)
         with open(metadata_path, 'w', encoding='utf-8') as f:
-            json.dump(webhook_payload, f, default=utils.json_datetime_serializer, ensure_ascii=False)
+            json.dump(payload, f, default=utils.json_datetime_serializer, ensure_ascii=False)
 
         utils.cleanup_calls(CALLS_DIR, KEEP_CALLS)
-
-        webhook_url = WEBHOOK_NOTIFICATION_URL
-        if webhook_url:
-            with open(metadata_path, 'r') as f:
-                payload = json.load(f)
-            try:
-                requests.post(webhook_url, data=json.dumps(payload), headers={"Content-Type": "application/json"}, timeout=10)
-                print(f"Processed call {call_sid} and sent webhook.")
-            except Exception as e:
-                print(f"Error sending webhook for call {call_sid}: {e}")
 
     except Exception as e:
         print(f"Error in process_call for {call_sid}: {e}")

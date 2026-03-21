@@ -1,5 +1,4 @@
 fastapi
-pyngrok
 twilio
 python-dotenv
 google-genai
