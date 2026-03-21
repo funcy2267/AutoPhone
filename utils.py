@@ -4,15 +4,7 @@ from pathlib import Path
 from datetime import datetime, date
 from typing import List, Tuple
 
-def load_settings():
-    settings_file = "settings.json"
-    if os.path.exists(settings_file):
-        try:
-            with open(settings_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Error loading {settings_file}: {e}")
-    return {}
+args = None
 
 def json_datetime_serializer(obj):
     """Serializes datetime objects into ISO 8601 format for JSON compatibility."""

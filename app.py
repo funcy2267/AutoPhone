@@ -18,18 +18,16 @@ load_dotenv()
 
 import services
 
-settings = utils.load_settings()
-
 # Configuration
 USER_DATA_DIR = "user_data"
 CALLS_DIR = os.path.join(USER_DATA_DIR, "calls")
-KEEP_CALLS = settings.get("KEEP_CALLS")
+KEEP_CALLS = utils.args.keep_calls
 SUMMARIZE_CALLS = True
 RECORDING_FILENAME = "recording.wav"
 METADATA_FILENAME = "call.json"
-WEBHOOK_NOTIFICATION_URL = settings.get("WEBHOOK_NOTIFICATION_URL")
-HTTP_AUTH = settings.get("HTTP_AUTH")
-SERVER_PUBLIC_URL = settings.get("SERVER_PUBLIC_URL")
+WEBHOOK_NOTIFICATION_URL = utils.args.notify
+HTTP_AUTH = utils.args.enable_auth
+SERVER_PUBLIC_URL = utils.args.server_public_url
 
 # Endpoints
 CALLS_ENDPOINT = "calls"

@@ -1,13 +1,29 @@
+import argparse
 import uvicorn
 import utils
+
+parser = argparse.ArgumentParser(description="AutoPhone")
+parser.add_argument("phone_number", type=str, help="Twilio phone number used for voice assistant")
+parser.add_argument("server_public_url", type=str, help="Publicly accessible server URL")
+parser.add_argument("server_port", type=int, help="Run server on specific port")
+parser.add_argument("--assistant-language", type=str, default="English", help="Assistant language")
+parser.add_argument("--assistant-owner", type=str, help="Assistant owner name")
+parser.add_argument("--keep-calls", type=int, default=5, help="Number of calls to keep")
+parser.add_argument("--enable-auth", action="store_true", help="Require authentication when connecting to the server")
+parser.add_argument("--notify", type=str, help="Send webhook notification to specified URL when assistant is starting a call")
+parser.add_argument("--gemini-assistant-model", type=str, default="gemini-2.5-flash-native-audio-preview-09-2025", help="Gemini Live assistant model")
+parser.add_argument("--gemini-assistant-voice", type=str, default="Sulafat", help="Gemini Live assistant voice")
+parser.add_argument("--gemini-summarization-model", type=str, default="gemini-2.5-flash-lite", help="Gemini Summarization Model")
+args = parser.parse_args()
+
+utils.args = args
+
 import services
 import app
 
-settings = utils.load_settings()
-
 # Configuration
-SERVICE_PORT = settings.get("SERVICE_PORT")
-SERVER_PUBLIC_URL = settings.get("SERVER_PUBLIC_URL")
+SERVICE_PORT = utils.args.server_port
+SERVER_PUBLIC_URL = utils.args.server_public_url
 
 def run_app():
     """Starts the FastAPI app to handle incoming calls."""

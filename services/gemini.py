@@ -12,17 +12,16 @@ import websockets
 
 load_dotenv()
 
-settings = utils.load_settings()
+GEMINI_LANGUAGE = utils.args.assistant_language
+GEMINI_ASSISTANT_OWNER_NAME = utils.args.assistant_owner
+GEMINI_ASSISTANT_MODEL = utils.args.gemini_assistant_model
+GEMINI_ASSISTANT_VOICE = utils.args.gemini_assistant_voice
+GEMINI_SUMMARIZATION_MODEL = utils.args.gemini_summarization_model
 
-GEMINI_LANGUAGE = settings.get("ASSISTANT_LANGUAGE")
-GEMINI_ASSISTANT_OWNER_NAME = settings.get("ASSISTANT_OWNER_NAME")
-GEMINI_ASSISTANT_MODEL = settings.get("GEMINI_ASSISTANT_MODEL")
-GEMINI_ASSISTANT_VOICE = settings.get("GEMINI_ASSISTANT_VOICE")
-GEMINI_SUMMARIZATION_MODEL = settings.get("GEMINI_SUMMARIZATION_MODEL")
-
+owner_string = f"{GEMINI_ASSISTANT_OWNER_NAME}'s " if GEMINI_ASSISTANT_OWNER_NAME else ""
 
 GEMINI_PROMPTS = {
-    "assistant_instruction": f"You are a helpful and friendly {GEMINI_ASSISTANT_OWNER_NAME}'s personal voice assistant. Your task is to conduct a conversation, which will then be transferred to the assistant's owner. Use language: {GEMINI_LANGUAGE}.",
+    "assistant_instruction": f"You are a helpful and friendly {owner_string}personal voice assistant. Your task is to conduct a conversation, which will then be transferred to the assistant's owner. Use language: {GEMINI_LANGUAGE}.",
     "inbound_init": "Hello! Please introduce yourself.",
     "outbound_init": "You are being redirected to interlocutor so please start the conversation from now. Your task as an assistant: ",
     "end_call": "Ends the voice call. Call this at the end of the conversation.",

@@ -5,11 +5,9 @@ import utils
 
 load_dotenv()
 
-settings = utils.load_settings()
-
 TWILIO_ENDPOINT = "twilio"
 
-TWILIO_PHONE_NUMBER = settings.get("TWILIO_PHONE_NUMBER")
+TWILIO_PHONE_NUMBER = utils.args.phone_number
 
 twilio_client = Client(os.environ.get("TWILIO_ACCOUNT_SID"), os.environ.get("TWILIO_AUTH_TOKEN"))
 
