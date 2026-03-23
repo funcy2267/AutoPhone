@@ -1,175 +1,44 @@
-import asyncio
-import base64
-import json
-import requests
-import audioop
-import os
+import argparse
 import uvicorn
-from typing import Dict, Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import Response
-from pydantic import BaseModel
-from pyngrok import ngrok
-from twilio.twiml.voice_response import VoiceResponse, Connect
+import utils
 
-# Import from new modules
-from services.gemini import GEMINI_PROMPTS
-from utils import json_datetime_serializer, cleanup_files
-from services.twilio import twilio_client, update_twilio_webhook, make_outbound_call
-from services.gemini import GeminiConversationManager, gemini_summarize_audio
+parser = argparse.ArgumentParser(description="AutoPhone")
+parser.add_argument("phone_number", type=str, help="Twilio phone number used for voice assistant")
+parser.add_argument("server_public_url", type=str, help="Publicly accessible server URL")
+parser.add_argument("server_port", type=int, help="Run server on specified port")
+parser.add_argument("--assistant-language", type=str, default="English", help="Assistant language")
+parser.add_argument("--assistant-owner", type=str, help="Assistant owner name")
+parser.add_argument("--keep-calls", type=int, default=5, help="Number of calls to keep")
+parser.add_argument("--enable-auth", action="store_true", help="Require authentication when connecting to the server")
+parser.add_argument("--notify", type=str, help="Send webhook notification to specified URL when assistant is starting a call")
+parser.add_argument("--gemini-assistant-model", type=str, default="gemini-2.5-flash-native-audio-preview-09-2025", help="Gemini Live assistant model")
+parser.add_argument("--gemini-assistant-voice", type=str, default="Sulafat", help="Gemini Live assistant voice")
+parser.add_argument("--no-recording", action="store_true", help="Disable call recording")
+args = parser.parse_args()
 
-# Configuration
-CALLS_DIR = "calls"
-SERVICE_PORT = 8080
-KEEP_CALL_RECORDINGS = int(os.environ.get("KEEP_CALL_RECORDINGS"))
+utils.args = args
 
-# In-memory store for call-specific data like custom prompts
-call_data_store: Dict[str, Dict] = {}
-
-# Global variable to store the public URL
-SERVER_PUBLIC_URL: Optional[str] = None
-
-# --- FastAPI App ---
-app = FastAPI()
-
-@app.post("/voice")
-async def voice_handler(request: Request):
-    """Handles incoming call from Twilio and establishes a WebSocket stream."""
-    response = VoiceResponse()
-    connect = Connect()
-    websocket_url = f"wss://{request.headers['host']}/ws"
-    connect.stream(url=websocket_url)
-    response.append(connect)
-    return Response(content=str(response), media_type="application/xml")
-
-@app.websocket("/ws")
-async def websocket_handler(websocket: WebSocket):
-    """Handles the WebSocket audio stream with Twilio."""
-    await websocket.accept()
-    print("WebSocket connection established.")
-
-    call_state = {"stream_sid": None}
-    # We will create the conversation manager after we get the 'start' event and have the callSid to look up a custom prompt.
-    conversation_manager = None
-    gemini_task = None
-    data = None # Initialize data to avoid UnboundLocalError in finally block if loop doesn't run
-
-    try:
-        # Main loop to receive messages from Twilio
-        while True:
-            message = await websocket.receive_text()
-            data = json.loads(message)
-
-            if data['event'] == 'start':
-                print(data)
-                call_state['stream_sid'] = data['start']['streamSid']
-                call_sid = data['start']['callSid']
-                os.makedirs(CALLS_DIR, exist_ok=True)
-                recording_path = f"{CALLS_DIR}/{call_sid}.wav"
-                print(f"Twilio stream started: {call_state['stream_sid']}")
-
-                conversation_manager = GeminiConversationManager(websocket, call_state, GEMINI_PROMPTS["inbound_init"])
-                gemini_task = asyncio.create_task(conversation_manager.run())
-                conversation_manager.start_recording(recording_path)
-                conversation_manager.initial_prompt_sent.set()
-
-            elif data['event'] == 'media':
-                if not conversation_manager:
-                    continue
-                    
-                # Audio from Twilio is base64 encoded mulaw
-                mulaw_audio = base64.b64decode(data['media']['payload'])
-                # Convert mulaw to 16-bit PCM for Gemini
-                pcm_audio = audioop.ulaw2lin(mulaw_audio, 2)
-                if conversation_manager and conversation_manager.recorder:
-                    conversation_manager.recorder.writeframes(pcm_audio)
-                if conversation_manager:
-                    await conversation_manager.audio_queue.put(pcm_audio)
-
-            elif data['event'] == 'stop':
-                print("Twilio stream stopped.")
-                if conversation_manager:
-                    await conversation_manager.audio_queue.put(None) # Signal end of stream
-                break
-
-        # Wait for the Gemini task to finish
-        if gemini_task:
-            await gemini_task
-
-    except WebSocketDisconnect:
-        print("WebSocket disconnected.")
-    except Exception as e:
-        print(f"An error occurred: {e}")
-    finally:
-        # Ensure the gemini task is cancelled if it's still running
-        if gemini_task and not gemini_task.done():
-            gemini_task.cancel()
-
-        print("Closing WebSocket connection.")
-        if conversation_manager and conversation_manager.recorder:
-            conversation_manager.recorder.close()
-            print("Recording saved.")
-        if websocket.client_state != 3: # 3 is DISCONNECTED state
-             await websocket.close()
-        
-        # Handle the end of call
-        if data and 'stop' in data and 'callSid' in data['stop']:
-            cleanup_files(CALLS_DIR, "*.wav", KEEP_CALL_RECORDINGS)
-            call_sid = data['stop']['callSid']
-            try:
-                call = twilio_client.calls(call_sid).fetch()
-                call_dict = {k: v for k, v in call.__dict__.items() if not k.startswith('_')}
-                if conversation_manager and conversation_manager.recorder:
-                     recording_path = f"{CALLS_DIR}/{call_sid}.wav" 
-                     requests.post(os.environ.get("WEBHOOK_TARGET_URL"), data=json.dumps({"call": call_dict, "summarized_text": gemini_summarize_audio(recording_path)}, default=json_datetime_serializer), headers={"Content-Type": "application/json"}, timeout=10)
-            except Exception as e:
-                print(f"Error in post-call processing: {e}")
-
-class CallRequest(BaseModel):
-    to_number: str
-    prompt: str
-
-@app.post("/call")
-async def make_outbound_call_handler(request: Request, call_request: CallRequest):
-    """Handles a webhook request to initiate an outbound call with a custom prompt."""
-    global SERVER_PUBLIC_URL, call_data_store
-
-    public_url = SERVER_PUBLIC_URL
-
-    print("Using Public URL for callback: ", public_url)
-    call_sid = make_outbound_call(public_url, call_request.to_number)
-    
-    if call_sid:
-        # Store the custom prompt with the call SID
-        call_data_store[call_sid] = {"prompt": GEMINI_PROMPTS["outbound_init"] + call_request.prompt}
-        return {"status": "success", "call_sid": call_sid}
-    else:
-        return Response(content=json.dumps({"status": "error", "message": "Failed to initiate call."}), status_code=500, media_type="application/json")
+import services
+import app
 
 def run_app():
-    """Starts the ngrok tunnel and the FastAPI app to handle incoming calls."""
-    global SERVER_PUBLIC_URL
-    
-    ngrok_authtoken = os.environ.get("NGROK_AUTHTOKEN")
-    if ngrok_authtoken:
-        ngrok.set_auth_token(ngrok_authtoken)
+    """Starts the FastAPI app to handle incoming calls."""
 
-    # Start ngrok tunnel
-    tunnel = ngrok.connect(SERVICE_PORT)
-    public_url = tunnel.public_url
-    SERVER_PUBLIC_URL = public_url
-    print(f"Ngrok tunnel is active at: {public_url}")
+    public_url = utils.args.server_public_url
 
-    # Update the webhook for incoming calls
-    update_twilio_webhook(public_url)
+    if public_url:
+        print(f"Using public URL: {public_url}")
+        # Update the webhook for incoming calls
+        services.twilio.update_twilio_webhook(public_url)
+    else:
+        print("Warning: SERVER_PUBLIC_URL not set.")
 
     try:
         # Run the FastAPI app
-        uvicorn.run(app, host="0.0.0.0", port=SERVICE_PORT)
+        uvicorn.run(app.app, host="0.0.0.0", port=utils.args.server_port)
 
-    finally:
-        print("Shutting down ngrok tunnel.")
-        ngrok.disconnect(public_url)
-        ngrok.kill()
+    except Exception as e:
+        print(f"Error starting app: {e}")
 
-run_app()
+if __name__ == "__main__":
+    run_app()
