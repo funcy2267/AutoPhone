@@ -45,13 +45,38 @@ next_queue_id = 1
 
 # --- FastAPI App & Lifespan ---
 
+async def verify_server_url():
+    if not SERVER_PUBLIC_URL:
+        return
+    #await asyncio.sleep(3)  # Delay the self-check
+    #print(f"Checking public URL: {SERVER_PUBLIC_URL}...")
+    try:
+        url = f"{SERVER_PUBLIC_URL.rstrip('/')}/verify"
+        response = await asyncio.to_thread(requests.get, url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("status") == "success":
+                print(f"Public URL verified successfully.")
+            else:
+                print(f"Warning: Public URL verification received unexpected JSON: {data}")
+        else:
+            print(f"Warning: Public URL verification failed with status {response.status_code}: {response.text}")
+    except Exception as e:
+        print(f"Warning: Public URL verification failed: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    asyncio.create_task(verify_server_url())
     yield
     for task in scheduled_calls.values():
         task.cancel()
 
 app = FastAPI(lifespan=lifespan)
+
+@app.get("/verify")
+async def verify_endpoint():
+    return {"status": "success"}
+
 
 # Authentication
 

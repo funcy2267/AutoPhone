@@ -4,16 +4,16 @@ A voice assistant application powered by Gemini and Twilio, capable of handling 
 ## Features
 
 - **Real-time Voice AI**: Uses Gemini Live API for voice conversations.
-- **Twilio Integration**: Handles phone calls via Twilio Voice.
-- **Call Summarization**: Automatically summarizes calls after they end.
+- **Handling calls with Twilio**: Handles phone calls via Twilio Voice.
+- **Call Summarization**: Automatically summarizes calls.
 - **Live call preview**: Preview the call in real-time.
 - **GUI App**: Graphical user interface for managing assistant.
 
 ## Prerequisites
 
 - Python 3
-- Twilio Account (with dedicated phone number used for voice assistant)
-- Gemini API Key
+- Twilio account (with dedicated phone number used for voice assistant)
+- Google account (used for Gemini API)
 
 # Configuration
 
@@ -26,10 +26,9 @@ A voice assistant application powered by Gemini and Twilio, capable of handling 
 
 ```bash
 cp .env.example .env
-cp settings.json.example settings.json
 ```
 
-Edit `.env` and `settings.json` to provide API keys and settings.
+Edit `.env` to provide credentials.
 Your instance must be publicly available, so use your own configuration or tunnelling service like [ngrok](https://ngrok.com).
 
 ### Install requirements
@@ -42,7 +41,7 @@ pip install -r requirements.txt
 ## Running the Server
 
 ```bash
-python3 main.py
+python3 main.py --help
 ```
 
 ## API Endpoints

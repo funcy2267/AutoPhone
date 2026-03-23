@@ -5,7 +5,7 @@ import utils
 parser = argparse.ArgumentParser(description="AutoPhone")
 parser.add_argument("phone_number", type=str, help="Twilio phone number used for voice assistant")
 parser.add_argument("server_public_url", type=str, help="Publicly accessible server URL")
-parser.add_argument("server_port", type=int, help="Run server on specific port")
+parser.add_argument("server_port", type=int, help="Run server on specified port")
 parser.add_argument("--assistant-language", type=str, default="English", help="Assistant language")
 parser.add_argument("--assistant-owner", type=str, help="Assistant owner name")
 parser.add_argument("--keep-calls", type=int, default=5, help="Number of calls to keep")
