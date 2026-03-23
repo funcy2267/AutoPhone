@@ -5,7 +5,6 @@ A voice assistant application powered by Gemini and Twilio, capable of handling 
 
 - **Real-time Voice AI**: Uses Gemini Live API for voice conversations.
 - **Handling calls with Twilio**: Handles phone calls via Twilio Voice.
-- **Call Summarization**: Automatically summarizes calls.
 - **Live call preview**: Preview the call in real-time.
 - **GUI App**: Graphical user interface for managing assistant.
 

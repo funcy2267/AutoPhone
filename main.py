@@ -13,7 +13,7 @@ parser.add_argument("--enable-auth", action="store_true", help="Require authenti
 parser.add_argument("--notify", type=str, help="Send webhook notification to specified URL when assistant is starting a call")
 parser.add_argument("--gemini-assistant-model", type=str, default="gemini-2.5-flash-native-audio-preview-09-2025", help="Gemini Live assistant model")
 parser.add_argument("--gemini-assistant-voice", type=str, default="Sulafat", help="Gemini Live assistant voice")
-parser.add_argument("--gemini-summarization-model", type=str, default="gemini-2.5-flash-lite", help="Gemini Summarization Model")
+parser.add_argument("--no-recording", action="store_true", help="Disable call recording")
 args = parser.parse_args()
 
 utils.args = args

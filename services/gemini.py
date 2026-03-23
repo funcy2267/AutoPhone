@@ -2,13 +2,13 @@ import asyncio
 import base64
 import json
 import wave
-from services import utils_audio
 import os
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 import utils
 import websockets
+import numpy as np
 
 load_dotenv()
 
@@ -16,9 +16,109 @@ GEMINI_LANGUAGE = utils.args.assistant_language
 GEMINI_ASSISTANT_OWNER_NAME = utils.args.assistant_owner
 GEMINI_ASSISTANT_MODEL = utils.args.gemini_assistant_model
 GEMINI_ASSISTANT_VOICE = utils.args.gemini_assistant_voice
-GEMINI_SUMMARIZATION_MODEL = utils.args.gemini_summarization_model
 
 owner_string = f"{GEMINI_ASSISTANT_OWNER_NAME}'s " if GEMINI_ASSISTANT_OWNER_NAME else ""
+
+class AudioUtils:
+    _ULAW_TABLE = None
+    _LIN_TABLE = None
+
+    @classmethod
+    def _generate_ulaw_table(cls):
+        table = np.zeros(65536, dtype=np.uint8)
+        BIAS = 0x84
+        CLIP = 32635
+
+        def manual_lin2ulaw(sample):
+            sign = 0
+            if sample < 0:
+                sample = -sample
+                sign = 0x80
+
+            if sample > CLIP:
+                sample = CLIP
+
+            sample += BIAS
+            exponent = 0
+            if sample >= 0x4000: exponent = 7
+            elif sample >= 0x2000: exponent = 6
+            elif sample >= 0x1000: exponent = 5
+            elif sample >= 0x0800: exponent = 4
+            elif sample >= 0x0400: exponent = 3
+            elif sample >= 0x0200: exponent = 2
+            elif sample >= 0x0100: exponent = 1
+            elif sample >= 0x0080: exponent = 0
+
+            mantissa = (sample >> (exponent + 3)) & 0x0F
+            ulaw_byte = ~(sign | (exponent << 4) | mantissa)
+            return ulaw_byte & 0xFF
+
+        for i in range(65536):
+            val = i - 65536 if i > 32767 else i
+            table[i] = manual_lin2ulaw(val)
+
+        cls._ULAW_TABLE = table
+
+    @classmethod
+    def _generate_lin_table(cls):
+        table = np.zeros(256, dtype=np.int16)
+
+        def manual_ulaw2lin(ulaw_byte):
+            ulaw_byte = ~ulaw_byte & 0xFF
+            sign = ulaw_byte & 0x80
+            exponent = (ulaw_byte >> 4) & 0x07
+            mantissa = ulaw_byte & 0x0F
+            sample = ((mantissa << 3) + 0x84) << exponent
+            sample -= 0x84
+            if sign != 0:
+                sample = -sample
+            return sample
+
+        for i in range(256):
+            table[i] = manual_ulaw2lin(i)
+
+        cls._LIN_TABLE = table
+
+    @classmethod
+    def initialize(cls):
+        if cls._ULAW_TABLE is None:
+            cls._generate_ulaw_table()
+            cls._generate_lin_table()
+
+    @classmethod
+    def lin2ulaw(cls, frame, width):
+        cls.initialize()
+        if width != 2:
+            raise ValueError("Only width=2 supported")
+        indices = np.frombuffer(frame, dtype=np.uint16)
+        encoded = cls._ULAW_TABLE[indices]
+        return encoded.tobytes()
+
+    @classmethod
+    def ulaw2lin(cls, frame, width):
+        cls.initialize()
+        if width != 2:
+            raise ValueError("Only width=2 supported")
+        indices = np.frombuffer(frame, dtype=np.uint8)
+        decoded = cls._LIN_TABLE[indices]
+        return decoded.tobytes()
+
+    @classmethod
+    def resample_24k_to_8k(cls, frame, width):
+        if width != 2:
+            raise ValueError("Only width=2 supported")
+
+        audio = np.frombuffer(frame, dtype=np.int16)
+        remainder = len(audio) % 3
+        if remainder != 0:
+            audio = audio[: -remainder]
+
+        reshaped = audio.reshape(-1, 3)
+        downsampled = np.mean(reshaped, axis=1).astype(np.int16)
+
+        return downsampled.tobytes(), None
+
+AudioUtils.initialize()
 
 GEMINI_PROMPTS = {
     "assistant_instruction": f"You are a helpful and friendly {owner_string}personal voice assistant. Your task is to conduct a conversation, which will then be transferred to the assistant's owner. Use language: {GEMINI_LANGUAGE}.",
@@ -46,7 +146,7 @@ class GeminiConversationManager:
     async def send_audio_to_twilio(self, pcm_24k_audio):
         """Transcodes and sends audio data to Twilio."""
         # 1. Resample from 24kHz to 8kHz
-        pcm_8k_audio, _ = utils_audio.resample_24k_to_8k(pcm_24k_audio, 2)
+        pcm_8k_audio, _ = AudioUtils.resample_24k_to_8k(pcm_24k_audio, 2)
         
         # Broadcast for preview
         await self.broadcast_audio(pcm_8k_audio)
@@ -56,7 +156,7 @@ class GeminiConversationManager:
         if self.recorder:
             self.recorder.writeframes(pcm_8k_audio)
 
-        mulaw_audio = utils_audio.lin2ulaw(pcm_8k_audio, 2)
+        mulaw_audio = AudioUtils.lin2ulaw(pcm_8k_audio, 2)
         # 3. Base64 encode and send
         payload = base64.b64encode(mulaw_audio).decode("utf-8")
 
@@ -232,20 +332,3 @@ class GeminiConversationManager:
                 task.cancel()
 
             # If receiver task finished first (Gemini ended call), we might want to ensure everything is clean.
-
-def gemini_summarize_call(transcription_history):
-    if not transcription_history:
-        return "No transcription available."
-
-    transcript_text = "\n".join([f"{entry['role'].upper()}: {entry['text']}" for entry in transcription_history])
-    print(f"Transcript: {transcript_text}")
-
-    client = genai.Client()
-    response = client.models.generate_content(
-    model=GEMINI_SUMMARIZATION_MODEL,
-    contents=[
-        f'Summarize this conversation between AI and user. Use language: {GEMINI_LANGUAGE}.\n\nTranscript:\n{transcript_text}'
-    ]
-    )
-
-    return response.text

@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, HTTPException, status, BackgroundTasks
 from fastapi.responses import Response, HTMLResponse, FileResponse, JSONResponse
 from pydantic import BaseModel
+import secrets
 from twilio.twiml.voice_response import VoiceResponse, Connect
 import utils
 from dotenv import load_dotenv
@@ -22,9 +23,7 @@ import services
 USER_DATA_DIR = "user_data"
 CALLS_DIR = os.path.join(USER_DATA_DIR, "calls")
 KEEP_CALLS = utils.args.keep_calls
-SUMMARIZE_CALLS = True
 RECORDING_FILENAME = "recording.wav"
-METADATA_FILENAME = "call.json"
 WEBHOOK_NOTIFICATION_URL = utils.args.notify
 HTTP_AUTH = utils.args.enable_auth
 SERVER_PUBLIC_URL = utils.args.server_public_url
@@ -48,8 +47,6 @@ next_queue_id = 1
 async def verify_server_url():
     if not SERVER_PUBLIC_URL:
         return
-    #await asyncio.sleep(3)  # Delay the self-check
-    #print(f"Checking public URL: {SERVER_PUBLIC_URL}...")
     try:
         url = f"{SERVER_PUBLIC_URL.rstrip('/')}/verify"
         response = await asyncio.to_thread(requests.get, url, timeout=10)
@@ -94,7 +91,6 @@ async def verify_password_middleware(request: Request, call_next):
                 username, password = decoded_credentials.split(":", 1)
                 
                 # Check against environment variables
-                import secrets
                 if secrets.compare_digest(username, os.environ.get("HTTP_USERNAME") or "") and secrets.compare_digest(password, os.environ.get("HTTP_PASSWORD") or ""):
                     is_authorized = True
             except Exception:
@@ -550,24 +546,15 @@ async def websocket_handler(websocket: WebSocket):
 
                 if active_cm is not None:
                      print(f"Rejecting new call {call_sid} because {current_call_sid} is active")
-                     # We can't easily reject via websocket other than closing or ignoring. 
-                     # But for better UX, we might want to just proceed and let the old one handle itself or similar.
-                     # User request: "operate on only one active call".
-                     # Let's enforce strict single call.
-                     # Actually, if we just overwrite, we might kill the previous one. 
-                     # Let's just overwrite for now as it seems most robust for "I want to switch to this call".
-                     # OR if the user meant "don't handle two at once", maybe just error?
-                     # A common pattern is "Busy". But here we are already connected via WS.
-                     # Let's check if the previous one is still running.
                      pass 
 
                 current_call_sid = call_sid
                 conversation_manager = services.gemini.GeminiConversationManager(websocket, call_state, prompt)
                 active_cm = conversation_manager
-                # active_calls[call_sid] = conversation_manager # Removed active_calls usage
                 
                 gemini_task = asyncio.create_task(conversation_manager.run())
-                conversation_manager.start_recording(recording_path)
+                if not utils.args.no_recording:
+                    conversation_manager.start_recording(recording_path)
                 conversation_manager.initial_prompt_sent.set()
 
                 # Send Webhook that call started
@@ -594,7 +581,7 @@ async def websocket_handler(websocket: WebSocket):
                 
                 mulaw_audio = base64.b64decode(data['media']['payload'])
                 # Convert mulaw to 16-bit PCM for Gemini
-                pcm_audio = services.utils_audio.ulaw2lin(mulaw_audio, 2)
+                pcm_audio = services.gemini.AudioUtils.ulaw2lin(mulaw_audio, 2)
                 
                 if conversation_manager and conversation_manager.recorder:
                     conversation_manager.recorder.writeframes(pcm_audio)
@@ -620,7 +607,6 @@ async def websocket_handler(websocket: WebSocket):
         if call_sid and call_sid == current_call_sid:
             current_call_sid = None
             active_cm = None
-            # del active_calls[call_sid]
 
         if gemini_task and not gemini_task.done():
             gemini_task.cancel()
@@ -647,18 +633,12 @@ async def websocket_handler(websocket: WebSocket):
                         print(f"Deleted call directory: {call_dir}")
                 else:
                     recording_path = os.path.join(call_dir, RECORDING_FILENAME)
-                    summarized_text = None
                     
                     transcription_history = []
                     if conversation_manager:
                          transcription_history = conversation_manager.transcription_history
-                         if SUMMARIZE_CALLS:
-                             try:
-                                 summarized_text = services.gemini.gemini_summarize_call(transcription_history)
-                             except:
-                                 summarized_text = None
 
-                    process_call(call_sid, call_dict, summarized_text, transcription_history)
+                    process_call(call_sid, call_dict, transcription_history)
             except Exception as e:
                 print(f"Error in post-call processing: {e}")
 
@@ -670,20 +650,18 @@ async def websocket_handler(websocket: WebSocket):
 
 # Group 5: Call Management
 
-def process_call(call_sid: str, call_dict: dict, summarized_text: Optional[str] = None, transcription: list = []):
+def process_call(call_sid: str, call_dict: dict, transcription: list = []):
     try:
         call_dir = os.path.join(CALLS_DIR, call_sid)
         os.makedirs(call_dir, exist_ok=True)
         
-        payload = {
-            "twilio_call_data": call_dict,
-            "summarized_text": summarized_text,
-            "transcription": transcription
-        }
-        
-        metadata_path = os.path.join(call_dir, METADATA_FILENAME)
-        with open(metadata_path, 'w', encoding='utf-8') as f:
-            json.dump(payload, f, default=utils.json_datetime_serializer, ensure_ascii=False)
+        twilio_call_data_path = os.path.join(call_dir, "twilio_call.json")
+        with open(twilio_call_data_path, 'w', encoding='utf-8') as f:
+            json.dump(call_dict, f, default=utils.json_datetime_serializer, ensure_ascii=False)
+
+        transcript_path = os.path.join(call_dir, "transcript.json")
+        with open(transcript_path, 'w', encoding='utf-8') as f:
+            json.dump(transcription, f, default=utils.json_datetime_serializer, ensure_ascii=False)
 
         utils.cleanup_calls(CALLS_DIR, KEEP_CALLS)
 
@@ -697,6 +675,14 @@ async def get_calls_list():
         return []
     calls = [d for d in os.listdir(CALLS_DIR) if os.path.isdir(os.path.join(CALLS_DIR, d))]
     return calls
+
+# Retrieve a list of files for a specific call
+@app.get(f"/{CALLS_ENDPOINT}/{{call_sid}}")
+async def get_call_files(call_sid: str):
+    call_dir = os.path.join(CALLS_DIR, call_sid)
+    if os.path.exists(call_dir) and os.path.isdir(call_dir):
+        return os.listdir(call_dir)
+    return Response(content=json.dumps({"error": "Call not found"}), status_code=404, media_type="application/json")
 
 # Retrieve a specific file (audio or JSON) for a call
 @app.get(f"/{CALLS_ENDPOINT}/{{call_sid}}/{{filename}}")
