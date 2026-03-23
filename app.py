@@ -22,11 +22,7 @@ import services
 # Configuration
 USER_DATA_DIR = "user_data"
 CALLS_DIR = os.path.join(USER_DATA_DIR, "calls")
-KEEP_CALLS = utils.args.keep_calls
 RECORDING_FILENAME = "recording.wav"
-WEBHOOK_NOTIFICATION_URL = utils.args.notify
-HTTP_AUTH = utils.args.enable_auth
-SERVER_PUBLIC_URL = utils.args.server_public_url
 
 # Endpoints
 CALLS_ENDPOINT = "calls"
@@ -45,10 +41,10 @@ next_queue_id = 1
 # --- FastAPI App & Lifespan ---
 
 async def verify_server_url():
-    if not SERVER_PUBLIC_URL:
+    if not utils.args.server_public_url:
         return
     try:
-        url = f"{SERVER_PUBLIC_URL.rstrip('/')}/verify"
+        url = f"{utils.args.server_public_url.rstrip('/')}/verify"
         response = await asyncio.to_thread(requests.get, url, timeout=10)
         if response.status_code == 200:
             data = response.json()
@@ -81,7 +77,7 @@ async def verify_endpoint():
 async def verify_password_middleware(request: Request, call_next):
     # Only protect endpoints starting with /calls
 
-    if HTTP_AUTH and request.url.path.startswith(f"/{CALLS_ENDPOINT}"):
+    if utils.args.enable_auth and request.url.path.startswith(f"/{CALLS_ENDPOINT}"):
         auth_header = request.headers.get("Authorization")
         is_authorized = False
         if auth_header and auth_header.startswith("Basic "):
@@ -115,8 +111,8 @@ async def schedule_call(queue_id: int, delay_seconds: float, call_data: dict):
         await asyncio.sleep(delay_seconds)
         
         print(f"Executing queued call {queue_id}")
-        if SERVER_PUBLIC_URL:
-            sid = services.twilio.make_outbound_call(SERVER_PUBLIC_URL, call_data["to_number"])
+        if utils.args.server_public_url:
+            sid = services.twilio.make_outbound_call(utils.args.server_public_url, call_data["to_number"])
             if sid:
                 full_prompt = services.gemini.GEMINI_PROMPTS["outbound_init"] + call_data["prompt"]
                 call_data_store[sid] = {"prompt": full_prompt}
@@ -196,9 +192,9 @@ async def handle_scheduled_call(call_request: CallRequest):
         return Response(content=json.dumps({"error": "Invalid datetime format. Use YYYY-MM-DD-HH-MM"}), status_code=400, media_type="application/json")
 
 async def handle_immediate_call(call_request: CallRequest):
-    global SERVER_PUBLIC_URL, call_data_store
+    global call_data_store
     
-    public_url = SERVER_PUBLIC_URL
+    public_url = utils.args.server_public_url
     print("Using Public URL for callback: ", public_url)
     call_sid = services.twilio.make_outbound_call(public_url, call_request.to_number)
     
@@ -558,7 +554,7 @@ async def websocket_handler(websocket: WebSocket):
                 conversation_manager.initial_prompt_sent.set()
 
                 # Send Webhook that call started
-                if WEBHOOK_NOTIFICATION_URL:
+                if utils.args.notify:
                      try:
                         call_details = services.twilio.twilio_client.calls(call_sid).fetch()
                         call_info = {k: v for k, v in call_details.__dict__.items() if not k.startswith('_')}
@@ -569,7 +565,7 @@ async def websocket_handler(websocket: WebSocket):
                             "twilio_call_data": call_info
                         }
                         # We use fire-and-forget logic or just await with short timeout
-                        requests.post(WEBHOOK_NOTIFICATION_URL, json=payload, timeout=2)
+                        requests.post(utils.args.notify, json=payload, timeout=2)
                         print(f"Sent start webhook for {call_sid}")
                      except Exception as e:
                         print(f"Failed to send start webhook: {e}")
@@ -663,7 +659,7 @@ def process_call(call_sid: str, call_dict: dict, transcription: list = []):
         with open(transcript_path, 'w', encoding='utf-8') as f:
             json.dump(transcription, f, default=utils.json_datetime_serializer, ensure_ascii=False)
 
-        utils.cleanup_calls(CALLS_DIR, KEEP_CALLS)
+        utils.cleanup_calls(CALLS_DIR, utils.args.keep_calls)
 
     except Exception as e:
         print(f"Error in process_call for {call_sid}: {e}")

@@ -12,12 +12,15 @@ import numpy as np
 
 load_dotenv()
 
-GEMINI_LANGUAGE = utils.args.assistant_language
-GEMINI_ASSISTANT_OWNER_NAME = utils.args.assistant_owner
-GEMINI_ASSISTANT_MODEL = utils.args.gemini_assistant_model
-GEMINI_ASSISTANT_VOICE = utils.args.gemini_assistant_voice
+owner_string = f"{utils.args.assistant_owner}'s " if utils.args.assistant_owner else ""
 
-owner_string = f"{GEMINI_ASSISTANT_OWNER_NAME}'s " if GEMINI_ASSISTANT_OWNER_NAME else ""
+GEMINI_PROMPTS = {
+    "assistant_instruction": f"You are a helpful and friendly {owner_string}personal voice assistant. Your task is to conduct a conversation, which will then be transferred to the assistant's owner. Use language: {utils.args.assistant_language}.",
+    "inbound_init": "Hello! Please introduce yourself.",
+    "outbound_init": "You are being redirected to interlocutor so please start the conversation from now. Your task as an assistant: ",
+    "end_call": "Ends the voice call. Call this at the end of the conversation.",
+    "admin_message": "Message from admin: "
+}
 
 class AudioUtils:
     _ULAW_TABLE = None
@@ -119,14 +122,6 @@ class AudioUtils:
         return downsampled.tobytes(), None
 
 AudioUtils.initialize()
-
-GEMINI_PROMPTS = {
-    "assistant_instruction": f"You are a helpful and friendly {owner_string}personal voice assistant. Your task is to conduct a conversation, which will then be transferred to the assistant's owner. Use language: {GEMINI_LANGUAGE}.",
-    "inbound_init": "Hello! Please introduce yourself.",
-    "outbound_init": "You are being redirected to interlocutor so please start the conversation from now. Your task as an assistant: ",
-    "end_call": "Ends the voice call. Call this at the end of the conversation.",
-    "admin_message": "Message from admin: "
-}
 
 class GeminiConversationManager:
     """Manages the conversation state and interaction with the Gemini Live API."""
@@ -234,7 +229,7 @@ class GeminiConversationManager:
             "speech_config": {
                 "voice_config": {
                     "prebuilt_voice_config": {
-                        "voice_name": GEMINI_ASSISTANT_VOICE
+                        "voice_name": utils.args.gemini_assistant_voice
                     }
                 }
             }
@@ -246,7 +241,7 @@ class GeminiConversationManager:
         gemini_config['output_audio_transcription'] = {}
 
 
-        async with gemini_client.aio.live.connect(model=GEMINI_ASSISTANT_MODEL, config=gemini_config) as gemini_session:
+        async with gemini_client.aio.live.connect(model=utils.args.gemini_assistant_model, config=gemini_config) as gemini_session:
             print("Gemini Live session started for continuous conversation.")
 
             async def sender():

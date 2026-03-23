@@ -21,14 +21,10 @@ utils.args = args
 import services
 import app
 
-# Configuration
-SERVICE_PORT = utils.args.server_port
-SERVER_PUBLIC_URL = utils.args.server_public_url
-
 def run_app():
     """Starts the FastAPI app to handle incoming calls."""
 
-    public_url = SERVER_PUBLIC_URL
+    public_url = utils.args.server_public_url
 
     if public_url:
         print(f"Using public URL: {public_url}")
@@ -39,7 +35,7 @@ def run_app():
 
     try:
         # Run the FastAPI app
-        uvicorn.run(app.app, host="0.0.0.0", port=SERVICE_PORT)
+        uvicorn.run(app.app, host="0.0.0.0", port=utils.args.server_port)
 
     except Exception as e:
         print(f"Error starting app: {e}")
