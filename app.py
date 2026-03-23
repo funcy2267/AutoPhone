@@ -30,22 +30,22 @@ TWILIO_ENDPOINT = "twilio"
 CURRENT_CALL_ENDPOINT = "current"
 QUEUE_ENDPOINT = "queue"
 
-# In-memory store
-call_data_store: Dict[str, Dict] = {}
-current_call_sid: Optional[str] = None
-active_cm: Optional[services.gemini.GeminiConversationManager] = None
-scheduled_calls: Dict[int, asyncio.Task] = {}
-scheduled_calls_data: Dict[int, Dict] = {}
-next_queue_id = 1
-
 # --- FastAPI App & Lifespan ---
 
-async def verify_server_url():
-    if not utils.args.server_public_url:
+async def verify_public_url(public_url: str):
+    if not public_url:
         return
     try:
-        url = f"{utils.args.server_public_url.rstrip('/')}/verify"
-        response = await asyncio.to_thread(requests.get, url, timeout=10)
+        url = f"{public_url.rstrip('/')}/verify"
+        headers = {}
+        if utils.args.enable_auth:
+            username = os.environ.get("HTTP_USERNAME") or ""
+            password = os.environ.get("HTTP_PASSWORD") or ""
+            credentials = f"{username}:{password}"
+            encoded_credentials = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
+            headers["Authorization"] = f"Basic {encoded_credentials}"
+
+        response = await asyncio.to_thread(requests.get, url, headers=headers, timeout=10)
         if response.status_code == 200:
             data = response.json()
             if data.get("status") == "success":
@@ -59,7 +59,8 @@ async def verify_server_url():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    asyncio.create_task(verify_server_url())
+    if utils.args.server_public_url:
+        asyncio.create_task(verify_public_url(utils.args.server_public_url))
     yield
     for task in scheduled_calls.values():
         task.cancel()
@@ -75,9 +76,10 @@ async def verify_endpoint():
 
 @app.middleware("http")
 async def verify_password_middleware(request: Request, call_next):
-    # Only protect endpoints starting with /calls
+    # Protect endpoints starting with /calls and the /verify endpoint
+    protected_paths = [f"/{CALLS_ENDPOINT}", "/verify"]
 
-    if utils.args.enable_auth and request.url.path.startswith(f"/{CALLS_ENDPOINT}"):
+    if utils.args.enable_auth and any(request.url.path.startswith(path) for path in protected_paths):
         auth_header = request.headers.get("Authorization")
         is_authorized = False
         if auth_header and auth_header.startswith("Basic "):
@@ -104,6 +106,10 @@ async def verify_password_middleware(request: Request, call_next):
 
 
 # Group 1: Queue Management
+
+scheduled_calls: Dict[int, asyncio.Task] = {}
+scheduled_calls_data: Dict[int, Dict] = {}
+next_queue_id = 1
 
 async def schedule_call(queue_id: int, delay_seconds: float, call_data: dict):
     try:
@@ -157,6 +163,8 @@ async def delete_queue_item(queue_id: int):
 
 
 # Group 2: Outbound Call Management
+
+call_data_store: Dict[str, Dict] = {}
 
 class CallRequest(BaseModel):
     to_number: str
@@ -213,6 +221,9 @@ async def make_outbound_call_handler(request: Request, call_request: CallRequest
 
 
 # Group 3: Active Call Control
+
+current_call_sid: Optional[str] = None
+active_cm: Optional[services.gemini.GeminiConversationManager] = None
 
 # Helper to get active call sid
 def get_current_call_sid():
@@ -450,8 +461,7 @@ async def status_callback_handler(request: Request):
             active_cm = None
 
         try:
-            call = services.twilio.twilio_client.calls(call_sid).fetch()
-            call_dict = {k: v for k, v in call.__dict__.items() if not k.startswith('_')}
+            call_dict = services.twilio.get_twilio_call_data(call_sid)
             process_call(call_sid, call_dict, "None", [])
         except Exception as e:
             print(f"Error in status callback processing: {e}")
@@ -556,16 +566,9 @@ async def websocket_handler(websocket: WebSocket):
                 # Send Webhook that call started
                 if utils.args.notify:
                      try:
-                        call_details = services.twilio.twilio_client.calls(call_sid).fetch()
-                        call_info = {k: v for k, v in call_details.__dict__.items() if not k.startswith('_')}
-                        payload = {
-                            "event": "started",
-                            "call_sid": call_sid,
-                            "timestamp": datetime.datetime.now().isoformat(),
-                            "twilio_call_data": call_info
-                        }
+                        call_info = services.twilio.get_twilio_call_data(call_sid)
                         # We use fire-and-forget logic or just await with short timeout
-                        requests.post(utils.args.notify, json=payload, timeout=2)
+                        requests.post(utils.args.notify, json=call_info, timeout=2)
                         print(f"Sent start webhook for {call_sid}")
                      except Exception as e:
                         print(f"Failed to send start webhook: {e}")
@@ -616,14 +619,14 @@ async def websocket_handler(websocket: WebSocket):
         
         if call_sid:
             try:
-                call = services.twilio.twilio_client.calls(call_sid).fetch()
-                call_dict = {k: v for k, v in call.__dict__.items() if not k.startswith('_')}
+                call_dict = services.twilio.get_twilio_call_data(call_sid)
                 
                 call_dir = os.path.join(CALLS_DIR, call_sid)
                 os.makedirs(call_dir, exist_ok=True)
                 
-                if call.answered_by and call.answered_by.startswith("machine"):
-                    print(f"Call answered by {call.answered_by}. Skipping success webhook and deleting recording.")
+                answered_by = call_dict.get('answered_by')
+                if answered_by and answered_by.startswith("machine"):
+                    print(f"Call answered by {answered_by}. Skipping success webhook and deleting recording.")
                     if os.path.exists(call_dir):
                         shutil.rmtree(call_dir)
                         print(f"Deleted call directory: {call_dir}")

@@ -9,6 +9,11 @@ TWILIO_ENDPOINT = "twilio"
 
 twilio_client = Client(os.environ.get("TWILIO_ACCOUNT_SID"), os.environ.get("TWILIO_AUTH_TOKEN"))
 
+def get_twilio_call_data(call_sid: str) -> dict:
+    """Fetches a Twilio call by its SID and formats it into a dictionary."""
+    call = twilio_client.calls(call_sid).fetch()
+    return {k: v for k, v in call.__dict__.items() if not k.startswith('_')}
+
 def update_twilio_webhook(public_url):
     """Finds the Twilio phone number and updates its voice webhook URL."""
     if not utils.args.phone_number:
