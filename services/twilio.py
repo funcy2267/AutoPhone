@@ -12,17 +12,17 @@ def get_twilio_call_data(call_sid: str) -> dict:
     call = twilio_client.calls(call_sid).fetch()
     return {k: v for k, v in call.__dict__.items() if not k.startswith('_')}
 
-def update_twilio_webhook(public_url: str):
+def update_twilio_webhook(phone_number: str, public_url: str):
     """Updates the Twilio voice webhook URL."""
-    if not utils.args.phone_number:
+    if not phone_number:
         return
     try:
-        numbers = twilio_client.incoming_phone_numbers.list(phone_number=utils.args.phone_number)
+        numbers = twilio_client.incoming_phone_numbers.list(phone_number=phone_number)
         if numbers:
             twilio_client.incoming_phone_numbers(numbers[0].sid).update(
                 voice_url=f"{public_url}/twilio/voice"
             )
-            print(f"Updated Twilio webhook for {utils.args.phone_number}")
+            print(f"Updated Twilio webhook for {phone_number}")
     except Exception as e:
         print(f"Error updating Twilio webhook: {e}")
 

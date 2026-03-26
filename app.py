@@ -96,11 +96,8 @@ async def get_live_info():
 async def live_audio_html(req: Request):
     if not State.live_sid: return HTMLResponse("<h1>No active call to preview</h1>")
     ws_url = f"{'wss' if req.url.scheme == 'https' else 'ws'}://{req.headers.get('host')}/{EP.live}/ws"
-    try:
-        with open("audio.html", "r") as f:
-            return HTMLResponse(f.read().replace("{{AUDIO_URL}}", ws_url))
-    except FileNotFoundError:
-        return HTMLResponse("audio.html not found.")
+    with open("audio.html", "r") as f:
+        return HTMLResponse(f.read().replace("{{AUDIO_URL}}", ws_url))
 
 @app.websocket(f"/{EP.live}/ws")
 async def live_ws(ws: WebSocket):
@@ -185,10 +182,7 @@ async def twilio_ws(ws: WebSocket):
                 cm.initial_prompt_sent.set()
                 gemini_task = asyncio.create_task(cm.run())
                 print(f"DEBUG [{sid}]: Stream started, Gemini task launched.")
-                
-                if utils.args.notify:
-                    asyncio.create_task(asyncio.to_thread(requests.post, utils.args.notify, json=services.twilio.get_twilio_call_data(sid), timeout=2))
-            
+
             elif data['event'] == 'media' and cm:
                 try:
                     pcm = audioop.ulaw2lin(base64.b64decode(data['media']['payload']), 2)
@@ -220,16 +214,17 @@ async def twilio_ws(ws: WebSocket):
 def post_process_call(sid: str, transcript: list):
     try:
         data = services.twilio.get_twilio_call_data(sid)
-        ans, cdir = data.get('answered_by'), os.path.join(CALLS_DIR, sid)
-        if ans and ans.startswith("machine"):
-            shutil.rmtree(cdir, ignore_errors=True)
-        else:
-            os.makedirs(cdir, exist_ok=True)
-            with open(os.path.join(cdir, TWILIO_DATA_FILE), 'w') as f: json.dump(data, f, default=utils.json_datetime_serializer)
-            with open(os.path.join(cdir, TRANSCRIPT_FILE), 'w') as f: json.dump(transcript, f, default=utils.json_datetime_serializer)
-            utils.cleanup_calls(CALLS_DIR, utils.args.keep_calls)
+        cdir = os.path.join(CALLS_DIR, sid)
+        os.makedirs(cdir, exist_ok=True)
+        with open(os.path.join(cdir, TWILIO_DATA_FILE), 'w') as f: json.dump(data, f, default=utils.json_datetime_serializer)
+        with open(os.path.join(cdir, TRANSCRIPT_FILE), 'w') as f: json.dump(transcript, f, default=utils.json_datetime_serializer)
+        utils.cleanup_calls(CALLS_DIR, utils.args.keep_calls)
     except Exception as e:
         print(f"Error processing {sid}: {e}")
+
+    if utils.args.notify:
+        asyncio.create_task(asyncio.to_thread(requests.post, utils.args.notify, json=data, timeout=30))
+        print(f"Webhook notification sent to {utils.args.notify}")
 
 @app.get(f"/{EP.calls}")
 async def list_calls():
