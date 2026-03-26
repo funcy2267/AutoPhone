@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoPhone Call Audio</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f7f9fc;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            color: #333;
+        }
+        .container {
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            text-align: center;
+            max-width: 400px;
+            width: 90%;
+        }
+        h2 {
+            margin-top: 0;
+        }
+        audio {
+            width: 100%;
+            margin-top: 1rem;
+        }
+        #status {
+            font-weight: bold;
+            color: #666;
+            margin-top: 1rem;
+        }
+        .live-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background-color: red;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(255, 0, 0, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(255, 0, 0, 0); }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2 id="title">Loading Audio...</h2>
+    <div id="player-container"></div>
+    <div id="status"></div>
+</div>
+
+<script>
+    const audioUrl = "{{AUDIO_URL}}";
+    const titleEl = document.getElementById('title');
+    const playerContainer = document.getElementById('player-container');
+    const statusEl = document.getElementById('status');
+
+    if (!audioUrl || audioUrl.includes("{" + "{AUDIO_URL}}")) {
+        titleEl.textContent = "Error";
+        statusEl.textContent = "Audio URL not provided.";
+    } else if (audioUrl.startsWith('ws://') || audioUrl.startsWith('wss://')) {
+        // --- LIVE PREVIEW (WEBSOCKET) ---
+        titleEl.innerHTML = '<span class="live-indicator"></span> Live Call Preview';
+        statusEl.textContent = "Connecting...";
+
+        let audioContext;
+        let nextPlayTimeUser = 0;
+        let nextPlayTimeAssistant = 0;
+
+        const ws = new WebSocket(audioUrl);
+
+        ws.onopen = () => {
+            statusEl.textContent = "Connected. Starting live audio...";
+            audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 8000 });
+            
+            const btn = document.createElement('button');
+            btn.textContent = "Start Live Audio";
+            btn.style.padding = "10px 20px";
+            btn.style.fontSize = "16px";
+            btn.style.cursor = "pointer";
+            btn.style.display = 'none';
+            btn.onclick = () => {
+                btn.style.display = 'none';
+                audioContext.resume();
+                statusEl.textContent = "Streaming live audio...";
+            };
+            playerContainer.appendChild(btn);
+
+            audioContext.onstatechange = () => {
+                if (audioContext.state === 'running') {
+                    btn.style.display = 'none';
+                    statusEl.textContent = "Streaming live audio...";
+                }
+            };
+
+            // Attempt to start audio context immediately (autoplay)
+            audioContext.resume().catch(() => {});
+
+            // If browser blocks autoplay, it remains suspended, show the button
+            setTimeout(() => {
+                if (audioContext.state === 'suspended') {
+                    btn.style.display = 'inline-block';
+                    statusEl.textContent = "Autoplay blocked. Click button to start.";
+                }
+            }, 150);
+        };
+
+        ws.onmessage = async (event) => {
+            if (!audioContext) return;
+            
+            const data = JSON.parse(event.data);
+            if (data.type === "audio" && data.data) {
+                // Decode base64 PCM data (16-bit little-endian)
+                const binaryString = atob(data.data);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                const pcm16 = new Int16Array(bytes.buffer);
+                
+                // Convert to f32 for Web Audio API
+                const f32Audio = new Float32Array(pcm16.length);
+                for (let i = 0; i < pcm16.length; i++) {
+                    f32Audio[i] = pcm16[i] / 32768.0;
+                }
+
+                // Create audio buffer (mono)
+                const buffer = audioContext.createBuffer(1, f32Audio.length, 8000);
+                buffer.getChannelData(0).set(f32Audio);
+
+                // Play it
+                const source = audioContext.createBufferSource();
+                source.buffer = buffer;
+                source.connect(audioContext.destination);
+
+                const currentTime = audioContext.currentTime;
+                if (data.source === 'user') {
+                    if (nextPlayTimeUser < currentTime) nextPlayTimeUser = currentTime;
+                    source.start(nextPlayTimeUser);
+                    nextPlayTimeUser += buffer.duration;
+                } else {
+                    if (nextPlayTimeAssistant < currentTime) nextPlayTimeAssistant = currentTime;
+                    source.start(nextPlayTimeAssistant);
+                    nextPlayTimeAssistant += buffer.duration;
+                }
+            } else if (data.type === "status") {
+                statusEl.textContent = data.status === "connected" ? "Connected. Waiting for audio..." : data.status;
+            }
+        };
+
+        ws.onclose = () => {
+            statusEl.textContent = "Call ended.";
+            titleEl.innerHTML = 'Live Call Ended';
+            if (audioContext) audioContext.close();
+        };
+
+        ws.onerror = (e) => {
+            statusEl.textContent = "WebSocket connection error.";
+            console.error(e);
+        };
+
+    } else {
+        // --- HTTP PREVIEW (RECORDED WAV) ---
+        titleEl.textContent = "Recorded Call Player";
+        const audioEl = document.createElement('audio');
+        audioEl.controls = true;
+        audioEl.src = audioUrl;
+        playerContainer.appendChild(audioEl);
+        statusEl.textContent = "Ready to play.";
+    }
+</script>
+
+</body>
+</html>
